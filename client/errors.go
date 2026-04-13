@@ -13,3 +13,8 @@ type APIError struct {
 func (e *APIError) Error() string {
 	return fmt.Sprintf("auth0: %s (status %d, code %s)", e.Message, e.StatusCode, e.Code)
 }
+
+// Unwrap allows errors.Is / errors.As to work with wrapped errors.
+func (e *APIError) Unwrap() error {
+	return nil
+}

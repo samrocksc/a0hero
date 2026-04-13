@@ -52,15 +52,13 @@ func NewAuth0MockServer(t *testing.T) *Auth0MockServer {
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		m.captureRequest(r)
 
-		// Token endpoint
-		if r.URL.Path == "/oauth/token" && r.Method == http.MethodPost {
-			m.handleToken(w, r)
+		if h, ok := m.handlers[r.URL.Path]; ok {
+			h(w, r)
 			return
 		}
 
-		// Custom or fallback handlers
-		if h, ok := m.handlers[r.URL.Path]; ok {
-			h(w, r)
+		if r.URL.Path == "/oauth/token" && r.Method == http.MethodPost {
+			m.handleToken(w, r)
 			return
 		}
 
@@ -169,19 +167,26 @@ func (m *Auth0MockServer) RespondWithAuth0Error(path string, status int, errCode
 	m.handlers[path] = func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
-		json.NewEncoder(w).Encode(map[string]any{
+		// Marshal first then write to avoid buffering issues with wrapped ResponseWriter
+		body, _ := json.Marshal(map[string]any{
 			"statusCode": status,
 			"error":      errCode,
 			"message":    message,
 		})
+		w.Write(body)
 	}
 }
 
 // RespondWithJSON registers a handler that returns the given status and JSON body.
+// The handler marshals and writes the body directly to avoid buffering with wrapped ResponseWriter.
 func (m *Auth0MockServer) RespondWithJSON(path string, status int, body any) {
+	data, err := json.Marshal(body)
+	if err != nil {
+		data = []byte(fmt.Sprintf(`{"error": "marshal failed: %v"}`, err))
+	}
 	m.handlers[path] = func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
-		json.NewEncoder(w).Encode(body)
+		w.Write(data)
 	}
 }

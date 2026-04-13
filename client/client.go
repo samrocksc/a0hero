@@ -2,60 +2,13 @@
 package client
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
-	"time"
 )
-
-// Config holds the configuration for an Auth0 tenant.
-type Config struct {
-	Name         string
-	Domain       string
-	ClientID     string
-	ClientSecret string
-}
-
-// Load reads a tenant config file from config/<name>.yaml.
-// Environment variables AUTH0_CLIENT_ID, AUTH0_CLIENT_SECRET, AUTH0_DOMAIN
-// take precedence over the file when set.
-func Load(name string) (*Config, error) {
-	// TODO: implement
-	return nil, nil
-}
-
-// AvailableTenants returns the names of all config files in the config directory.
-func AvailableTenants(configDir string) ([]string, error) {
-	// TODO: implement
-	return nil, nil
-}
-
-// ---------------------------------------------------------------------------
-// Authenticator
-// ---------------------------------------------------------------------------
-
-// Authenticator performs client credentials OAuth against Auth0
-// and caches tokens with automatic refresh near expiry.
-type Authenticator struct {
-	// TODO: implement
-}
-
-// NewAuthenticator creates a new Authenticator for the given credentials.
-func NewAuthenticator(domain, clientID, clientSecret, tenant string) (*Authenticator, error) {
-	// TODO: implement
-	return nil, nil
-}
-
-// GetToken returns a valid access token, fetching or refreshing as needed.
-// It is safe for concurrent use.
-func (a *Authenticator) GetToken(ctx context.Context) (string, error) {
-	// TODO: implement
-	return "", nil
-}
-
-// SetToken manually sets the cached token and expiry (for testing).
-func (a *Authenticator) SetToken(ctx context.Context, token string, expiresAt time.Time) {
-	// TODO: implement
-}
 
 // ---------------------------------------------------------------------------
 // Client
@@ -70,17 +23,54 @@ type Client struct {
 	tenant    string
 }
 
+// authTransport injects the Bearer token on every request.
+type authTransport struct {
+	auth   *Authenticator
+	inner  http.RoundTripper
+}
+
+// RoundTrip implements http.RoundTripper — fetches token and injects Authorization.
+func (t *authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	token, err := t.auth.GetToken(req.Context())
+	if err != nil {
+		// Propagate the token fetch error — it is already an *APIError
+		return nil, err
+	}
+
+	req = req.Clone(req.Context())
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	return t.inner.RoundTrip(req)
+}
+
 // NewClient creates a new Auth0 API client for the given tenant config.
 // It performs an initial token fetch to verify credentials.
 func NewClient(baseURL, clientID, clientSecret, tenant string) (*Client, error) {
-	// TODO: implement
-	return nil, nil
-}
+	if clientSecret == "" {
+		return nil, fmt.Errorf("client secret is required")
+	}
 
-// NewClientFromConfig creates a client from a Config struct.
-func NewClientFromConfig(baseURL string, cfg *Config) (*Client, error) {
-	// TODO: implement
-	return nil, nil
+	auth, err := NewAuthenticator(baseURL, clientID, clientSecret, tenant)
+	if err != nil {
+		return nil, err
+	}
+
+	c := &Client{
+		httpClient: &http.Client{
+			Transport: &authTransport{auth: auth, inner: http.DefaultTransport},
+		},
+		baseURL: baseURL,
+		auth:    auth,
+		tenant:  tenant,
+	}
+
+	// Verify credentials by fetching a token upfront
+	_, err = auth.GetToken(context.Background())
+	if err != nil {
+		return nil, err
+	}
+
+	return c, nil
 }
 
 // Tenant returns the configured tenant name.
@@ -88,28 +78,84 @@ func (c *Client) Tenant() string {
 	return c.tenant
 }
 
+// BaseURL returns the configured base URL.
+func (c *Client) BaseURL() string {
+	return c.baseURL
+}
+
+// rawRequest performs an HTTP request with the given method and path.
+// The path is joined with c.baseURL. result is filled from the response body.
+func (c *Client) rawRequest(ctx context.Context, method, path string, body any, result any) error {
+	var bodyReader io.Reader
+	if body != nil {
+		data, err := json.Marshal(body)
+		if err != nil {
+			return fmt.Errorf("marshal request body: %w", err)
+		}
+		bodyReader = bytes.NewReader(data)
+	}
+
+	url := c.baseURL + path
+	req, err := http.NewRequestWithContext(ctx, method, url, bodyReader)
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("auth transport error: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read response body: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		var apiErr APIError
+		if err := json.Unmarshal(respBody, &apiErr); err == nil {
+			apiErr.StatusCode = resp.StatusCode
+			return &apiErr
+		}
+		// Fallback if we can't parse error body
+		return &APIError{
+			StatusCode: resp.StatusCode,
+			Message:    string(respBody),
+			Code:      "unknown",
+		}
+	}
+
+	if result != nil {
+		if err := json.Unmarshal(respBody, result); err != nil {
+			return fmt.Errorf("unmarshal response body: %w", err)
+		}
+	}
+
+	return nil
+}
+
 // Get issues a GET request to the given path with the authenticated transport.
 func (c *Client) Get(ctx context.Context, path string, result any) error {
-	// TODO: implement
-	return nil
+	return c.rawRequest(ctx, http.MethodGet, path, nil, result)
 }
 
 // Post issues a POST request with the given body.
 func (c *Client) Post(ctx context.Context, path string, body, result any) error {
-	// TODO: implement
-	return nil
+	return c.rawRequest(ctx, http.MethodPost, path, body, result)
 }
 
 // Patch issues a PATCH request with the given body.
 func (c *Client) Patch(ctx context.Context, path string, body, result any) error {
-	// TODO: implement
-	return nil
+	return c.rawRequest(ctx, http.MethodPatch, path, body, result)
 }
 
 // Delete issues a DELETE request to the given path.
 func (c *Client) Delete(ctx context.Context, path string) error {
-	// TODO: implement
-	return nil
+	return c.rawRequest(ctx, http.MethodDelete, path, nil, nil)
 }
 
 // ---------------------------------------------------------------------------
@@ -128,8 +174,11 @@ type UsersClient struct {
 
 // List returns the first page of users.
 func (c *UsersClient) List(ctx context.Context) (any, error) {
-	// TODO: implement
-	return nil, nil
+	var result struct {
+		Users []map[string]any `json:"users"`
+	}
+	err := c.c.Get(ctx, "/api/v2/users", &result)
+	return result.Users, err
 }
 
 // NewClientsClient returns a ClientsClient backed by c.
@@ -144,8 +193,11 @@ type ClientsClient struct {
 
 // List returns the first page of clients.
 func (c *ClientsClient) List(ctx context.Context) (any, error) {
-	// TODO: implement
-	return nil, nil
+	var result struct {
+		Clients []map[string]any `json:"clients"`
+	}
+	err := c.c.Get(ctx, "/api/v2/clients", &result)
+	return result.Clients, err
 }
 
 // NewRolesClient returns a RolesClient backed by c.
