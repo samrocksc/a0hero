@@ -10,11 +10,13 @@ import (
 
 	"github.com/samrocksc/a0hero/logger"
 	"github.com/samrocksc/a0hero/tui"
+	"github.com/samrocksc/a0hero/version"
 )
 
 var (
 	configDir string
 	debug     bool
+	showVersion bool
 )
 
 func main() {
@@ -23,6 +25,10 @@ func main() {
 		Short: "Auth0 tenant manager in your terminal",
 		Long:  "A0Hero wraps the Auth0 Management API in a terminal interface for day-to-day administration.",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if showVersion {
+				fmt.Println(version.Info())
+				return nil
+			}
 			return runTUI()
 		},
 	}
@@ -38,6 +44,7 @@ func main() {
 
 	rootCmd.Flags().StringVar(&configDir, "config-dir", configDir, "directory for tenant config files")
 	rootCmd.Flags().BoolVar(&debug, "debug", false, "enable debug logging to logs/")
+	rootCmd.Flags().BoolVarP(&showVersion, "version", "v", false, "print version and exit")
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -60,7 +67,7 @@ func runTUI() error {
 		return fmt.Errorf("failed to create config directory %s: %w", configDir, err)
 	}
 
-	logger.Info("starting a0hero", "config_dir", configDir, "debug", debug)
+	logger.Info("starting a0hero", "version", version.Short(), "config_dir", configDir, "debug", debug)
 
 	app := tui.NewApp(configDir, debug)
 	p := tea.NewProgram(app, tea.WithAltScreen())
