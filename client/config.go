@@ -52,6 +52,18 @@ func Load(name string) (*Config, error) {
 	return &cfg, nil
 }
 
+// WriteFile writes the config as YAML to the given file path.
+func (c *Config) WriteFile(path string) error {
+	data, err := yaml.Marshal(c)
+	if err != nil {
+		return fmt.Errorf("failed to marshal config: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		return fmt.Errorf("failed to write config file %s: %w", path, err)
+	}
+	return nil
+}
+
 // AvailableTenants returns the names of all config files in the config directory.
 func AvailableTenants(configDir string) ([]string, error) {
 	entries, err := os.ReadDir(configDir)

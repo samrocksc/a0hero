@@ -125,8 +125,12 @@ type App struct {
 	// Detail view
 	detailContent string
 
-	// Configure
-	configForm *huh.Form
+	// Configure form — values stored here so they survive across updates
+	configForm    *huh.Form
+	configName    string
+	configDomain  string
+	configCID     string
+	configSecret  string
 
 	// Status
 	loading bool
@@ -177,7 +181,6 @@ func (a *App) loadConfig() tea.Cmd {
 			}
 			c, err := client.NewClientFromConfig(cfg)
 			if err != nil {
-				// Connection failed — still show menu, just not connected
 				return authenticated{err: err}
 			}
 			return authenticated{client: c, cfg: cfg}
@@ -196,7 +199,6 @@ func (a *App) loadConfig() tea.Cmd {
 
 		c, err := client.NewClientFromConfig(cfg)
 		if err != nil {
-			// Config found but can't connect — still show menu
 			return authenticated{client: nil, cfg: cfg, err: err}
 		}
 		return authenticated{client: c, cfg: cfg}
@@ -215,7 +217,6 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case tea.KeyMsg:
-		// During configure form, intercept only our navigation keys
 		if a.view == viewConfigure && a.configForm != nil {
 			switch msg.String() {
 			case "ctrl+c":
@@ -225,8 +226,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.configForm = nil
 				return a, nil
 			}
-			// Forward all other keys to huh
+			// Forward to huh; after each key, check if form completed
 			_, cmd := a.configForm.Update(msg)
+			if a.configForm.State == huh.StateCompleted {
+				return a, a.submitConfig()
+			}
 			return a, cmd
 		}
 		return a.handleKey(msg)
@@ -241,17 +245,15 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			a.err = msg.err.Error()
 			if strings.Contains(a.err, "no tenants") {
-				// No configs at all — launch configure
 				a.view = viewConfigure
 				a.newConfigForm()
 				return a, a.configForm.Init()
 			}
-			// Config found but connection failed — show menu with error
 			if msg.cfg != nil {
 				a.tenant = msg.cfg.Name
 				a.domain = msg.cfg.Domain
 			}
-			a.api = msg.client // will be nil
+			a.api = msg.client
 			return a, nil
 		}
 		a.api = msg.client
@@ -276,7 +278,6 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.view = viewMainMenu
 			return a, nil
 		}
-		// Successfully configured and connected
 		a.api = msg.api
 		a.cfg = msg.cfg
 		a.tenant = msg.cfg.Name
@@ -287,7 +288,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
-	// Forward to config form if active
+	// Forward non-key messages to config form if active (spinner ticks, etc.)
 	if a.view == viewConfigure && a.configForm != nil {
 		_, cmd := a.configForm.Update(msg)
 		return a, cmd
@@ -438,6 +439,67 @@ func (a *App) selectMenu() (tea.Model, tea.Cmd) {
 }
 
 // ---------------------------------------------------------------------------
+// Configure form
+// ---------------------------------------------------------------------------
+
+func (a *App) newConfigForm() {
+	// Reset values
+	a.configName = ""
+	a.configDomain = ""
+	a.configCID = ""
+	a.configSecret = ""
+
+	a.configForm = huh.NewForm(
+		huh.NewGroup(
+			huh.NewInput().Title("Tenant Name").Value(&a.configName).Placeholder("dev"),
+			huh.NewInput().Title("Domain").Value(&a.configDomain).Placeholder("dev-tenant.auth0.com"),
+			huh.NewInput().Title("Client ID").Value(&a.configCID).Placeholder("your-client-id"),
+			huh.NewInput().Title("Client Secret").Value(&a.configSecret).Placeholder("your-client-secret").EchoMode(huh.EchoModePassword),
+		),
+	).WithWidth(50)
+}
+
+// submitConfig is a tea.Cmd that writes the YAML config file, authenticates,
+// and returns a configDoneMsg.
+func (a *App) submitConfig() tea.Cmd {
+	name := a.configName
+	domain := a.configDomain
+	cid := a.configCID
+	secret := a.configSecret
+	configDir := a.configDir
+
+	return func() tea.Msg {
+		if name == "" || domain == "" || cid == "" || secret == "" {
+			return configDoneMsg{err: fmt.Errorf("all fields are required")}
+		}
+
+		cfg := &client.Config{
+			Name:         name,
+			Domain:       domain,
+			ClientID:     cid,
+			ClientSecret: secret,
+		}
+
+		// Write config file
+		if err := os.MkdirAll(configDir, 0755); err != nil {
+			return configDoneMsg{err: fmt.Errorf("create config dir: %w", err)}
+		}
+		configPath := filepath.Join(configDir, name+".yaml")
+		if err := cfg.WriteFile(configPath); err != nil {
+			return configDoneMsg{err: fmt.Errorf("write config: %w", err)}
+		}
+
+		// Authenticate
+		c, err := client.NewClientFromConfig(cfg)
+		if err != nil {
+			return configDoneMsg{err: fmt.Errorf("connection failed: %w", err)}
+		}
+
+		return configDoneMsg{cfg: cfg, api: c}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Data fetchers
 // ---------------------------------------------------------------------------
 
@@ -566,23 +628,6 @@ func (a *App) fetchLogs() tea.Cmd {
 }
 
 // ---------------------------------------------------------------------------
-// Configure form
-// ---------------------------------------------------------------------------
-
-func (a *App) newConfigForm() {
-	var name, domain, clientID, clientSecret string
-
-	a.configForm = huh.NewForm(
-		huh.NewGroup(
-			huh.NewInput().Title("Tenant Name").Value(&name).Placeholder("dev"),
-			huh.NewInput().Title("Domain").Value(&domain).Placeholder("dev-tenant.auth0.com"),
-			huh.NewInput().Title("Client ID").Value(&clientID).Placeholder("your-client-id"),
-			huh.NewInput().Title("Client Secret").Value(&clientSecret).Placeholder("your-client-secret").EchoMode(huh.EchoModePassword),
-		),
-	).WithWidth(50)
-}
-
-// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -602,7 +647,6 @@ func (a *App) View() string {
 		a.width = 80
 	}
 
-	// Loading screen
 	if a.loading {
 		return fmt.Sprintf("\n\n  %s Connecting to Auth0...\n\n", a.spinner.View())
 	}
@@ -624,11 +668,9 @@ func (a *App) View() string {
 func (a *App) viewMainMenu() string {
 	var b strings.Builder
 
-	// Title bar
 	b.WriteString(titleStyle.Render(" A0Hero "))
 	b.WriteString("\n\n")
 
-	// Tenant info or connection error
 	if a.api != nil {
 		b.WriteString(successStyle.Render("✓ Connected"))
 		b.WriteString(subtitleStyle.Render(fmt.Sprintf("  %s (%s)", a.tenant, a.domain)))
@@ -640,7 +682,6 @@ func (a *App) viewMainMenu() string {
 		b.WriteString("\n\n")
 	}
 
-	// Menu items
 	for i, item := range a.menuItems {
 		if i == a.menuIndex {
 			b.WriteString(selectedStyle.Render(fmt.Sprintf(" ➤ %s", item)))
@@ -699,13 +740,11 @@ func (a *App) viewModule() string {
 		return b.String()
 	}
 
-	// Table header
 	b.WriteString(normalStyle.Bold(true).Render(strings.Join(a.moduleCols, "  ")))
 	b.WriteString("\n")
 	b.WriteString(normalStyle.Render(strings.Repeat("─", 60)))
 	b.WriteString("\n")
 
-	// Table rows — show up to height-10 items
 	maxRows := a.height - 10
 	if maxRows < 5 {
 		maxRows = 20
