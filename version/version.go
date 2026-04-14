@@ -7,7 +7,7 @@ import (
 
 // Set via -ldflags at build time.
 var (
-	Version   = "dev"    // e.g. v0.1.0
+	Version   = "v0.1.0" // e.g. v0.1.0
 	Commit    = "none"   // git short hash
 	BuildDate = "unknown"
 )
