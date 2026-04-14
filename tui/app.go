@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
@@ -29,21 +30,39 @@ import (
 // ---------------------------------------------------------------------------
 
 var (
-	titleStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("#FAFAFA")).
-			Background(lipgloss.Color("#7C58CB")).
+	brandBg = lipgloss.Color("#7C58CB")
+
+	tabStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#AAAAAA")).
 			Padding(0, 2)
 
-	subtitleStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#888888"))
-
-	selectedStyle = lipgloss.NewStyle().
+	activeTabStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#FFFFFF")).
-			Background(lipgloss.Color("#7C58CB"))
+			Background(brandBg).
+			Bold(true).
+			Padding(0, 2)
 
-	normalStyle = lipgloss.NewStyle().
+	tabGapStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#444444"))
+
+	titleStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#FFFFFF")).
+			Background(brandBg).
+			Bold(true).
+			Padding(0, 1)
+
+	headerStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#666666"))
+
+	selectedRowStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#FFFFFF")).
+				Background(brandBg)
+
+	normalRowStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#DDDDDD"))
+
+	colHeaderStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#888888")).Bold(true)
 
 	errorStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#FF5555"))
@@ -52,26 +71,41 @@ var (
 			Foreground(lipgloss.Color("#50FA7B"))
 
 	helpStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#666666"))
+			Foreground(lipgloss.Color("#555555"))
 
-	borderStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("#7C58CB")).
-			Padding(0, 1)
+	detailBorderStyle = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("#555555")).
+				Padding(0, 1)
+
+	dividerStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#333333"))
 )
 
 // ---------------------------------------------------------------------------
-// Views
+// Tabs / Sections
 // ---------------------------------------------------------------------------
 
-type view int
+type section int
 
 const (
-	viewMainMenu view = iota
-	viewConfigure
-	viewModule
-	viewDetail
+	secUsers section = iota
+	secClients
+	secRoles
+	secConnections
+	secLogs
+	secConfigure
+	secCount // sentinel
 )
+
+var sectionNames = [secCount]string{
+	"Users",
+	"Clients",
+	"Roles",
+	"Connections",
+	"Logs",
+	"Configure",
+}
 
 // ---------------------------------------------------------------------------
 // Messages
@@ -110,39 +144,45 @@ type App struct {
 	cfg       *client.Config
 	api       *client.Client
 
-	view     view
-	previous view
+	// Current section
+	section  section
+	previous section
 
-	// Main menu
-	menuIndex int
-	menuItems []string
+	// Module content
+	items        []moduleItem
+	cursor       int
+	cols         []string
+	loading      bool
+	err          string
 
-	// Module view
-	moduleItems   []moduleItem
-	moduleIndex   int
-	moduleCols    []string
-	moduleTitle   string
-	moduleLoading bool
-
-	// Detail view
+	// Detail overlay
+	showDetail   bool
 	detailContent string
 
-	// Configure form — values stored here so they survive across updates
-	configForm    *huh.Form
-	configName    string
-	configDomain  string
-	configCID     string
-	configSecret  string
+	// Configure form
+	configForm  *huh.Form
+	configName  string
+	configDomain string
+	configCID   string
+	configSecret string
 
-	// Status
-	loading bool
-	debug   bool
-	spinner spinner.Model
-	err     string
+	// Connection state
 	tenant  string
 	domain  string
-	width   int
-	height  int
+	connected bool
+
+	// Spinner
+	spinner spinner.Model
+
+	// Viewport for detail/scroll
+	viewport viewport.Model
+
+	// Terminal size
+	width  int
+	height int
+
+	// Debug
+	debug bool
 }
 
 // NewApp creates a new App model.
@@ -153,10 +193,9 @@ func NewApp(configDir string, debug bool) *App {
 
 	return &App{
 		configDir: configDir,
-		debug:     debug,
-		view:      viewMainMenu,
-		menuItems: []string{"Users", "Clients (Applications)", "Roles", "Connections", "Logs", "Configure", "Quit"},
+		section:   secUsers,
 		spinner:   s,
+		debug:     debug,
 		loading:   true,
 	}
 }
@@ -173,7 +212,6 @@ func (a *App) loadConfig() tea.Cmd {
 	return func() tea.Msg {
 		logger.Info("loading config", "config_dir", a.configDir)
 
-		// Check for env vars first
 		clientID := os.Getenv("AUTH0_CLIENT_ID")
 		clientSecret := os.Getenv("AUTH0_CLIENT_SECRET")
 		domain := os.Getenv("AUTH0_DOMAIN")
@@ -193,7 +231,6 @@ func (a *App) loadConfig() tea.Cmd {
 			return authenticated{client: c, cfg: cfg}
 		}
 
-		// Try to load from config dir
 		tenants, err := client.AvailableTenants(a.configDir)
 		if err != nil || len(tenants) == 0 {
 			logger.Warn("no tenants found in config dir")
@@ -208,7 +245,7 @@ func (a *App) loadConfig() tea.Cmd {
 
 		c, err := client.NewClientFromConfig(cfg)
 		if err != nil {
-			return authenticated{client: c, cfg: cfg, err: err}
+			return authenticated{client: nil, cfg: cfg, err: err}
 		}
 		logger.Info("connected to tenant", "tenant", cfg.Name, "domain", cfg.Domain)
 		return authenticated{client: c, cfg: cfg}
@@ -220,164 +257,182 @@ func (a *App) loadConfig() tea.Cmd {
 // ---------------------------------------------------------------------------
 
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+
+	// Let the spinner tick
+	s, spinCmd := a.spinner.Update(msg)
+	a.spinner = s
+	if spinCmd != nil {
+		cmds = append(cmds, spinCmd)
+	}
+
+	// Let the viewport scroll
+	if a.viewport.Width > 0 {
+		v, vpCmd := a.viewport.Update(msg)
+		a.viewport = v
+		if vpCmd != nil {
+			cmds = append(cmds, vpCmd)
+		}
+	}
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		a.width = msg.Width
 		a.height = msg.Height
-		return a, nil
+		a.viewport.Width = msg.Width
+		a.viewport.Height = a.contentHeight()
+		cmds = append(cmds, a.fetchCurrentSection())
+		return a, tea.Batch(cmds...)
 
 	case tea.KeyMsg:
-		if a.view == viewConfigure && a.configForm != nil {
-			switch msg.String() {
-			case "ctrl+c":
-				return a, tea.Quit
-			case "esc":
-				a.view = viewMainMenu
-				a.configForm = nil
-				return a, nil
-			}
-			// Forward to huh; after each key, check if form completed
-			_, cmd := a.configForm.Update(msg)
-			if a.configForm.State == huh.StateCompleted {
-				return a, a.submitConfig()
-			}
-			return a, cmd
-		}
 		return a.handleKey(msg)
-
-	case spinner.TickMsg:
-		var cmd tea.Cmd
-		a.spinner, cmd = a.spinner.Update(msg)
-		return a, cmd
 
 	case authenticated:
 		a.loading = false
 		if msg.err != nil {
 			a.err = msg.err.Error()
 			logger.Error("authentication failed", "error", msg.err)
-			if strings.Contains(a.err, "no tenants") {
-				a.view = viewConfigure
-				a.newConfigForm()
-				return a, a.configForm.Init()
-			}
 			if msg.cfg != nil {
 				a.tenant = msg.cfg.Name
 				a.domain = msg.cfg.Domain
 			}
-			a.api = msg.client
-			return a, nil
+			a.connected = false
+			a.section = secConfigure
+			a.newConfigForm()
+			cmds = append(cmds, a.configForm.Init())
+			return a, tea.Batch(cmds...)
 		}
 		a.api = msg.client
 		a.tenant = msg.cfg.Name
 		a.domain = msg.cfg.Domain
+		a.connected = true
 		a.err = ""
-		return a, nil
+		cmds = append(cmds, a.fetchCurrentSection())
+		return a, tea.Batch(cmds...)
 
 	case moduleItemsMsg:
-		a.moduleLoading = false
+		a.loading = false
 		if msg.err != nil {
 			a.err = msg.err.Error()
-			logger.Error("module fetch failed", "module", a.moduleTitle, "error", msg.err)
-			return a, nil
+			logger.Error("module fetch failed", "section", sectionNames[a.section], "error", msg.err)
+			return a, tea.Batch(cmds...)
 		}
-		a.moduleItems = msg.items
-		logger.Info("module data loaded", "module", a.moduleTitle, "count", len(msg.items))
-		return a, nil
+		a.items = msg.items
+		a.cursor = 0
+		a.err = ""
+		a.showDetail = false
+		logger.Info("module data loaded", "section", sectionNames[a.section], "count", len(msg.items))
+		return a, tea.Batch(cmds...)
 
 	case configDoneMsg:
 		if msg.err != nil {
 			a.err = msg.err.Error()
 			logger.Error("configure failed", "error", msg.err)
 			a.configForm = nil
-			a.view = viewMainMenu
-			return a, nil
+			return a, tea.Batch(cmds...)
 		}
 		a.api = msg.api
 		a.cfg = msg.cfg
 		a.tenant = msg.cfg.Name
 		a.domain = msg.cfg.Domain
+		a.connected = true
 		a.err = ""
 		a.configForm = nil
-		a.view = viewMainMenu
 		logger.Info("configure success", "tenant", msg.cfg.Name, "domain", msg.cfg.Domain)
-		return a, nil
+		a.section = secUsers
+		cmds = append(cmds, a.fetchCurrentSection())
+		return a, tea.Batch(cmds...)
 	}
 
-	// Forward non-key messages to config form if active (spinner ticks, etc.)
-	if a.view == viewConfigure && a.configForm != nil {
+	// Forward to config form if active
+	if a.section == secConfigure && a.configForm != nil {
 		_, cmd := a.configForm.Update(msg)
-		return a, cmd
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		// Check if form completed after any update
+		if a.configForm.State == huh.StateCompleted {
+			cmds = append(cmds, a.submitConfig())
+		}
 	}
 
-	return a, nil
+	return a, tea.Batch(cmds...)
 }
 
 func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "ctrl+c":
-		return a, tea.Quit
+	var cmds []tea.Cmd
 
-	case "q":
-		if a.view == viewMainMenu {
-			return a, tea.Quit
+	// Detail overlay mode
+	if a.showDetail {
+		switch msg.String() {
+		case "esc", "q":
+			a.showDetail = false
+			return a, nil
 		}
-		a.view = viewMainMenu
-		a.moduleItems = nil
-		a.detailContent = ""
-		a.err = ""
-		a.moduleIndex = 0
+		// Let viewport handle scrolling
 		return a, nil
+	}
 
-	case "esc":
-		if a.view == viewDetail {
-			a.view = a.previous
-			a.detailContent = ""
+	// Configure mode — forward most keys to huh
+	if a.section == secConfigure && a.configForm != nil {
+		switch msg.String() {
+		case "ctrl+c":
+			return a, tea.Quit
+		case "esc":
+			a.section = secUsers
+			a.configForm = nil
 			return a, nil
+		default:
+			_, cmd := a.configForm.Update(msg)
+			if a.configForm.State == huh.StateCompleted {
+				cmds = append(cmds, a.submitConfig())
+			}
+			return a, tea.Batch(append(cmds, cmd)...)
 		}
-		if a.view == viewModule {
-			a.view = viewMainMenu
-			a.moduleItems = nil
-			a.err = ""
-			return a, nil
-		}
+	}
+
+	switch msg.String() {
+	case "ctrl+c", "q":
 		return a, tea.Quit
 
-	case "up", "k":
-		if a.view == viewMainMenu {
-			if a.menuIndex > 0 {
-				a.menuIndex--
-			}
-		} else if a.view == viewModule && a.moduleItems != nil {
-			if a.moduleIndex > 0 {
-				a.moduleIndex--
-			}
+	case "tab", "right", "l":
+		a.section = (a.section + 1) % secCount
+		a.cursor = 0
+		a.showDetail = false
+		a.err = ""
+		if a.section == secConfigure {
+			a.newConfigForm()
+			cmds = append(cmds, a.configForm.Init())
+		} else {
+			cmds = append(cmds, a.fetchCurrentSection())
 		}
+		return a, tea.Batch(cmds...)
+
+	case "shift+tab", "left", "h":
+		a.section = (a.section - 1 + secCount) % secCount
+		a.cursor = 0
+		a.showDetail = false
+		a.err = ""
+		if a.section == secConfigure {
+			a.newConfigForm()
+			cmds = append(cmds, a.configForm.Init())
+		} else {
+			cmds = append(cmds, a.fetchCurrentSection())
+		}
+		return a, tea.Batch(cmds...)
 
 	case "down", "j":
-		if a.view == viewMainMenu {
-			if a.menuIndex < len(a.menuItems)-1 {
-				a.menuIndex++
-			}
-		} else if a.view == viewModule && a.moduleItems != nil {
-			if a.moduleIndex < len(a.moduleItems)-1 {
-				a.moduleIndex++
-			}
+		if a.items != nil && a.cursor < len(a.items)-1 {
+			a.cursor++
+		}
+	case "up", "k":
+		if a.cursor > 0 {
+			a.cursor--
 		}
 
 	case "enter":
-		return a.handleEnter()
-	}
-
-	return a, nil
-}
-
-func (a *App) handleEnter() (tea.Model, tea.Cmd) {
-	switch a.view {
-	case viewMainMenu:
-		return a.selectMenu()
-	case viewModule:
-		if a.moduleItems != nil && a.moduleIndex < len(a.moduleItems) {
-			item := a.moduleItems[a.moduleIndex]
+		if a.items != nil && a.cursor < len(a.items) {
+			item := a.items[a.cursor]
 			if item.dict != nil {
 				var b strings.Builder
 				maxKeyLen := 0
@@ -394,130 +449,46 @@ func (a *App) handleEnter() (tea.Model, tea.Cmd) {
 			} else {
 				a.detailContent = strings.Join(item.cols, " | ")
 			}
-			a.previous = viewModule
-			a.view = viewDetail
+			a.showDetail = true
+			a.viewport.SetContent(a.detailContent)
+			a.viewport.GotoTop()
 		}
-		return a, nil
-	}
-	return a, nil
-}
-
-func (a *App) selectMenu() (tea.Model, tea.Cmd) {
-	a.moduleIndex = 0
-	a.moduleItems = nil
-	a.err = ""
-
-	logger.Debug("menu select", "item", a.menuItems[a.menuIndex])
-
-	if a.api == nil && a.menuItems[a.menuIndex] != "Configure" && a.menuItems[a.menuIndex] != "Quit" {
-		a.err = "not connected — configure a tenant first"
-		return a, nil
 	}
 
-	switch a.menuItems[a.menuIndex] {
-	case "Users":
-		a.view = viewModule
-		a.moduleTitle = "Users"
-		a.moduleCols = usermod.Columns()
-		a.moduleLoading = true
-		return a, a.fetchUsers()
-	case "Clients (Applications)":
-		a.view = viewModule
-		a.moduleTitle = "Clients"
-		a.moduleCols = clientmod.Columns()
-		a.moduleLoading = true
-		return a, a.fetchClients()
-	case "Roles":
-		a.view = viewModule
-		a.moduleTitle = "Roles"
-		a.moduleCols = rolemod.Columns()
-		a.moduleLoading = true
-		return a, a.fetchRoles()
-	case "Connections":
-		a.view = viewModule
-		a.moduleTitle = "Connections"
-		a.moduleCols = connmod.Columns()
-		a.moduleLoading = true
-		return a, a.fetchConnections()
-	case "Logs":
-		a.view = viewModule
-		a.moduleTitle = "Logs"
-		a.moduleCols = logmod.Columns()
-		a.moduleLoading = true
-		return a, a.fetchLogs()
-	case "Configure":
-		a.view = viewConfigure
-		a.newConfigForm()
-		return a, a.configForm.Init()
-	case "Quit":
-		return a, tea.Quit
-	}
-	return a, nil
+	return a, tea.Batch(cmds...)
 }
 
 // ---------------------------------------------------------------------------
-// Configure form
+// Section switching
 // ---------------------------------------------------------------------------
 
-func (a *App) newConfigForm() {
-	// Reset values
-	a.configName = ""
-	a.configDomain = ""
-	a.configCID = ""
-	a.configSecret = ""
-
-	a.configForm = huh.NewForm(
-		huh.NewGroup(
-			huh.NewInput().Title("Tenant Name").Value(&a.configName).Placeholder("dev"),
-			huh.NewInput().Title("Domain").Value(&a.configDomain).Placeholder("dev-tenant.auth0.com"),
-			huh.NewInput().Title("Client ID").Value(&a.configCID).Placeholder("your-client-id"),
-			huh.NewInput().Title("Client Secret").Value(&a.configSecret).Placeholder("your-client-secret").EchoMode(huh.EchoModePassword),
-		),
-	).WithWidth(50)
-}
-
-// submitConfig is a tea.Cmd that writes the YAML config file, authenticates,
-// and returns a configDoneMsg.
-func (a *App) submitConfig() tea.Cmd {
-	name := a.configName
-	domain := a.configDomain
-	cid := a.configCID
-	secret := a.configSecret
-	configDir := a.configDir
-
-	return func() tea.Msg {
-		logger.Info("submitting config", "tenant", name, "domain", domain)
-
-		if name == "" || domain == "" || cid == "" || secret == "" {
-			return configDoneMsg{err: fmt.Errorf("all fields are required")}
-		}
-
-		cfg := &client.Config{
-			Name:         name,
-			Domain:       domain,
-			ClientID:     cid,
-			ClientSecret: secret,
-		}
-
-		// Write config file
-		if err := os.MkdirAll(configDir, 0755); err != nil {
-			return configDoneMsg{err: fmt.Errorf("create config dir: %w", err)}
-		}
-		configPath := filepath.Join(configDir, name+".yaml")
-		if err := cfg.WriteFile(configPath); err != nil {
-			return configDoneMsg{err: fmt.Errorf("write config: %w", err)}
-		}
-
-		logger.Info("config file written", "path", configPath)
-
-		// Authenticate
-		c, err := client.NewClientFromConfig(cfg)
-		if err != nil {
-			return configDoneMsg{err: fmt.Errorf("connection failed: %w", err)}
-		}
-
-		return configDoneMsg{cfg: cfg, api: c}
+func (a *App) fetchCurrentSection() tea.Cmd {
+	if a.api == nil {
+		return nil
 	}
+	switch a.section {
+	case secUsers:
+		a.cols = usermod.Columns()
+		a.loading = true
+		return a.fetchUsers()
+	case secClients:
+		a.cols = clientmod.Columns()
+		a.loading = true
+		return a.fetchClients()
+	case secRoles:
+		a.cols = rolemod.Columns()
+		a.loading = true
+		return a.fetchRoles()
+	case secConnections:
+		a.cols = connmod.Columns()
+		a.loading = true
+		return a.fetchConnections()
+	case secLogs:
+		a.cols = logmod.Columns()
+		a.loading = true
+		return a.fetchLogs()
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -649,6 +620,65 @@ func (a *App) fetchLogs() tea.Cmd {
 }
 
 // ---------------------------------------------------------------------------
+// Configure
+// ---------------------------------------------------------------------------
+
+func (a *App) newConfigForm() {
+	a.configName = ""
+	a.configDomain = ""
+	a.configCID = ""
+	a.configSecret = ""
+
+	a.configForm = huh.NewForm(
+		huh.NewGroup(
+			huh.NewInput().Title("Tenant Name").Value(&a.configName).Placeholder("dev"),
+			huh.NewInput().Title("Domain").Value(&a.configDomain).Placeholder("dev-tenant.auth0app.com"),
+			huh.NewInput().Title("Client ID").Value(&a.configCID).Placeholder("your-client-id"),
+			huh.NewInput().Title("Client Secret").Value(&a.configSecret).Placeholder("your-client-secret").EchoMode(huh.EchoModePassword),
+		),
+	).WithWidth(50)
+}
+
+func (a *App) submitConfig() tea.Cmd {
+	name := a.configName
+	domain := a.configDomain
+	cid := a.configCID
+	secret := a.configSecret
+	configDir := a.configDir
+
+	return func() tea.Msg {
+		logger.Info("submitting config", "tenant", name, "domain", domain)
+
+		if name == "" || domain == "" || cid == "" || secret == "" {
+			return configDoneMsg{err: fmt.Errorf("all fields are required")}
+		}
+
+		cfg := &client.Config{
+			Name:         name,
+			Domain:       domain,
+			ClientID:     cid,
+			ClientSecret: secret,
+		}
+
+		if err := os.MkdirAll(configDir, 0755); err != nil {
+			return configDoneMsg{err: fmt.Errorf("create config dir: %w", err)}
+		}
+		configPath := filepath.Join(configDir, name+".yaml")
+		if err := cfg.WriteFile(configPath); err != nil {
+			return configDoneMsg{err: fmt.Errorf("write config: %w", err)}
+		}
+		logger.Info("config file written", "path", configPath)
+
+		c, err := client.NewClientFromConfig(cfg)
+		if err != nil {
+			return configDoneMsg{err: fmt.Errorf("connection failed: %w", err)}
+		}
+
+		return configDoneMsg{cfg: cfg, api: c}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -659,155 +689,214 @@ func formatTimePtr(t *time.Time) string {
 	return t.Format("2006-01-02 15:04:05")
 }
 
+func (a *App) contentHeight() int {
+	// 1 tab bar + 1 info bar + 1 divider + 1 help bar = 4 lines overhead
+	h := a.height - 4
+	if h < 5 {
+		h = 5
+	}
+	return h
+}
+
 // ---------------------------------------------------------------------------
 // View
 // ---------------------------------------------------------------------------
 
 func (a *App) View() string {
 	if a.width == 0 {
-		a.width = 80
+		return "Loading..."
+	}
+
+	// Still connecting
+	if a.loading && a.api == nil && a.err == "" {
+		return fmt.Sprintf("\n  %s Connecting to Auth0...\n", a.spinner.View())
+	}
+
+	var b strings.Builder
+
+	// 1. Tab bar
+	b.WriteString(a.renderTabs())
+	b.WriteString("\n")
+
+	// 2. Info bar (tenant + connection status)
+	b.WriteString(a.renderInfoBar())
+	b.WriteString("\n")
+
+	// 3. Divider
+	b.WriteString(dividerStyle.Render(strings.Repeat("─", a.width)))
+	b.WriteString("\n")
+
+	// 4. Content area (or detail overlay)
+	if a.showDetail {
+		b.WriteString(a.renderDetail())
+	} else {
+		b.WriteString(a.renderContent())
+	}
+
+	// 5. Help bar
+	b.WriteString("\n")
+	b.WriteString(a.renderHelp())
+
+	return b.String()
+}
+
+func (a *App) renderTabs() string {
+	var tabs []string
+	for i, name := range sectionNames {
+		if section(i) == a.section {
+			tabs = append(tabs, activeTabStyle.Render(name))
+		} else {
+			tabs = append(tabs, tabStyle.Render(name))
+		}
+	}
+
+	// Join with a subtle separator
+	tabRow := lipgloss.JoinHorizontal(lipgloss.Bottom, tabs...)
+
+	// Right-align the brand
+	brand := titleStyle.Render(" A0Hero ")
+
+	// Calculate padding between tabs and brand
+	contentWidth := lipgloss.Width(tabRow) + lipgloss.Width(brand)
+	if contentWidth < a.width {
+		gap := a.width - contentWidth
+		tabRow = tabRow + tabGapStyle.Render(strings.Repeat(" ", gap))
+	}
+
+	// This puts brand at far right
+	// Actually let's just do: brand | tabs
+	row := lipgloss.JoinHorizontal(lipgloss.Bottom, brand, tabRow)
+
+	return row
+}
+
+func (a *App) renderInfoBar() string {
+	if a.connected {
+		status := successStyle.Render("✓ " + a.tenant)
+		domain := headerStyle.Render(a.domain)
+		right := headerStyle.Render(fmt.Sprintf("  %s", domain))
+		return lipgloss.JoinHorizontal(lipgloss.Bottom, status, right)
+	}
+	if a.err != "" {
+		return errorStyle.Render("⚠  " + a.err)
+	}
+	return headerStyle.Render("Not connected")
+}
+
+func (a *App) renderContent() string {
+	if a.section == secConfigure {
+		return a.renderConfigure()
+	}
+
+	if !a.connected {
+		return "\n  Not connected — tab to Configure to set up a tenant.\n"
 	}
 
 	if a.loading {
-		return fmt.Sprintf("\n\n  %s Connecting to Auth0...\n\n", a.spinner.View())
-	}
-
-	switch a.view {
-	case viewMainMenu:
-		return a.viewMainMenu()
-	case viewConfigure:
-		return a.viewConfigure()
-	case viewModule:
-		return a.viewModule()
-	case viewDetail:
-		return a.viewDetail()
-	default:
-		return a.viewMainMenu()
-	}
-}
-
-func (a *App) viewMainMenu() string {
-	var b strings.Builder
-
-	b.WriteString(titleStyle.Render(" A0Hero "))
-	b.WriteString("\n\n")
-
-	if a.api != nil {
-		b.WriteString(successStyle.Render("✓ Connected"))
-		b.WriteString(subtitleStyle.Render(fmt.Sprintf("  %s (%s)", a.tenant, a.domain)))
-		b.WriteString("\n\n")
-	} else if a.err != "" {
-		b.WriteString(errorStyle.Render("⚠  Not connected"))
-		b.WriteString("\n")
-		b.WriteString(subtitleStyle.Render(a.err))
-		b.WriteString("\n\n")
-	}
-
-	for i, item := range a.menuItems {
-		if i == a.menuIndex {
-			b.WriteString(selectedStyle.Render(fmt.Sprintf(" ➤ %s", item)))
-		} else {
-			b.WriteString(normalStyle.Render(fmt.Sprintf("   %s", item)))
-		}
-		b.WriteString("\n")
-	}
-
-	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("↑/k ↓/j navigate • enter select • q quit"))
-
-	return b.String()
-}
-
-func (a *App) viewConfigure() string {
-	var b strings.Builder
-
-	b.WriteString(titleStyle.Render(" A0Hero — Configure "))
-	b.WriteString("\n\n")
-
-	if a.configForm != nil {
-		b.WriteString(a.configForm.View())
-	} else {
-		b.WriteString("Setting up form...")
-	}
-
-	b.WriteString("\n\n")
-	b.WriteString(helpStyle.Render("esc to cancel • tab to move between fields • enter to submit"))
-
-	return b.String()
-}
-
-func (a *App) viewModule() string {
-	var b strings.Builder
-
-	b.WriteString(titleStyle.Render(fmt.Sprintf(" A0Hero — %s ", a.moduleTitle)))
-	b.WriteString("\n\n")
-
-	if a.moduleLoading {
-		b.WriteString(fmt.Sprintf("  %s Loading...\n", a.spinner.View()))
-		return b.String()
+		return fmt.Sprintf("\n  %s Loading %s...\n", a.spinner.View(), sectionNames[a.section])
 	}
 
 	if a.err != "" {
-		b.WriteString(errorStyle.Render(fmt.Sprintf("error: %s", a.err)))
-		b.WriteString("\n\n")
-		b.WriteString(helpStyle.Render("esc to go back"))
-		return b.String()
+		return errorStyle.Render(fmt.Sprintf("\n  error: %s\n", a.err))
 	}
 
-	if len(a.moduleItems) == 0 {
-		b.WriteString(normalStyle.Render("No items found."))
-		b.WriteString("\n\n")
-		b.WriteString(helpStyle.Render("esc to go back"))
-		return b.String()
+	if len(a.items) == 0 {
+		return normalRowStyle.Render(fmt.Sprintf("\n  No %s found.\n", strings.ToLower(sectionNames[a.section])))
 	}
 
-	b.WriteString(normalStyle.Bold(true).Render(strings.Join(a.moduleCols, "  ")))
+	return a.renderTable()
+}
+
+func (a *App) renderTable() string {
+	var b strings.Builder
+
+	// Column headers
+	b.WriteString(colHeaderStyle.Render("  " + strings.Join(a.cols, "   ")))
 	b.WriteString("\n")
-	b.WriteString(normalStyle.Render(strings.Repeat("─", 60)))
+	b.WriteString(dividerStyle.Render(strings.Repeat("─", a.width)))
 	b.WriteString("\n")
 
-	maxRows := a.height - 10
-	if maxRows < 5 {
+	// How many rows fit?
+	maxRows := a.contentHeight() - 4 // overhead for header + divider + padding
+	if maxRows < 3 {
 		maxRows = 20
 	}
-	end := a.moduleIndex + maxRows/2
-	start := a.moduleIndex - maxRows/2
-	if start < 0 {
-		start = 0
-	}
-	if end > len(a.moduleItems) {
-		end = len(a.moduleItems)
-	}
+
+	// Determine visible window (scroll)
+	start := 0
+	end := len(a.items)
 	if end-start > maxRows {
-		start = end - maxRows
+		// Center cursor in the viewport
+		half := maxRows / 2
+		start = a.cursor - half
+		if start < 0 {
+			start = 0
+		}
+		end = start + maxRows
+		if end > len(a.items) {
+			end = len(a.items)
+			start = end - maxRows
+			if start < 0 {
+				start = 0
+			}
+		}
 	}
 
 	for i := start; i < end; i++ {
-		item := a.moduleItems[i]
-		row := strings.Join(item.cols, "  ")
-		if i == a.moduleIndex {
-			b.WriteString(selectedStyle.Render(fmt.Sprintf(" ➤ %s", row)))
+		item := a.items[i]
+		row := strings.Join(item.cols, "   ")
+
+		// Pad row to fill width for selection highlight
+		padded := row
+		if len(row) < a.width-2 {
+			padded = row + strings.Repeat(" ", a.width-2-len(row))
+		}
+
+		if i == a.cursor {
+			b.WriteString(selectedRowStyle.Render("  " + padded))
 		} else {
-			b.WriteString(normalStyle.Render(fmt.Sprintf("   %s", row)))
+			b.WriteString(normalRowStyle.Render("  " + row))
 		}
 		b.WriteString("\n")
 	}
 
-	b.WriteString("\n")
-	b.WriteString(helpStyle.Render(fmt.Sprintf("%d/%d items • ↑/k ↓/j • enter detail • esc back", a.moduleIndex+1, len(a.moduleItems))))
-
 	return b.String()
 }
 
-func (a *App) viewDetail() string {
+func (a *App) renderDetail() string {
+	return detailBorderStyle.Render(a.detailContent)
+}
+
+func (a *App) renderConfigure() string {
 	var b strings.Builder
-
-	b.WriteString(titleStyle.Render(fmt.Sprintf(" A0Hero — %s Detail ", a.moduleTitle)))
-	b.WriteString("\n\n")
-
-	b.WriteString(borderStyle.Render(a.detailContent))
-	b.WriteString("\n\n")
-	b.WriteString(helpStyle.Render("esc back • q main menu"))
-
+	b.WriteString("\n")
+	if a.configForm != nil {
+		b.WriteString(a.configForm.View())
+	}
 	return b.String()
+}
+
+func (a *App) renderHelp() string {
+	if a.showDetail {
+		return helpStyle.Render(" esc/back close detail  •  ↑↓ scroll  •  q quit")
+	}
+	if a.section == secConfigure {
+		return helpStyle.Render(" tab next section  •  esc cancel  •  enter submit")
+	}
+	return helpStyle.Render(fmt.Sprintf(
+		" ←/h →/l tab switch  •  ↑/k ↓/j scroll %s  •  enter detail  •  q quit",
+		f.dimCount(a.cursor, len(a.items)),
+	))
+}
+
+// small helper for help line
+type fmtHelper struct{}
+
+var f = fmtHelper{}
+
+func (fmtHelper) dimCount(cursor, total int) string {
+	if total == 0 {
+		return ""
+	}
+	return fmt.Sprintf("(%d/%d)", cursor+1, total)
 }
