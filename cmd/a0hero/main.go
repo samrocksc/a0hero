@@ -58,9 +58,12 @@ func runTUI() error {
 	}
 	defer logger.Close()
 
-	if debug {
-		fmt.Fprintf(os.Stderr, "debug logs → %s\n", logger.LogPath())
-	}
+	logger.Info("a0hero starting",
+		"version", version.Short(),
+		"commit", version.Commit,
+		"platform", version.OSArch(),
+		"debug", debug,
+		"config_dir", configDir)
 
 	// Ensure config dir exists
 	if err := os.MkdirAll(configDir, 0755); err != nil {

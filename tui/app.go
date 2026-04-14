@@ -350,14 +350,15 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.height = msg.Height
 		a.viewport.Width = msg.Width
 		a.viewport.Height = a.contentHeight()
-		// Forward to edit overlay if active
+		// Forward to edit overlay if active (don't cancel it!)
 		if a.editOverlay != nil {
 			_, cmd := a.editOverlay.Update(msg)
 			if cmd != nil {
 				cmds = append(cmds, cmd)
 			}
+		} else {
+			cmds = append(cmds, a.fetchCurrentSection())
 		}
-		cmds = append(cmds, a.fetchCurrentSection())
 		return a, tea.Batch(cmds...)
 
 	case tea.KeyMsg:
@@ -401,6 +402,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.cursor = 0
 		a.err = ""
 		a.showDetail = false
+		a.refreshTableContent() // Update viewport with new items
 		// Save to cache
 		a.saveToCache(a.section, msg.items, a.cols)
 		logger.Info("module data loaded", "section", sectionNames[a.section], "count", len(msg.items))
@@ -490,6 +492,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case EditOverlayClosed:
+		logger.Info("edit overlay closed")
 		// Edit overlay was closed
 		a.editOverlay = nil
 		return a, nil
@@ -777,6 +780,7 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // cancelFetch cancels any in-progress fetch.
 func (a *App) cancelFetch() {
 	if a.fetchCancel != nil {
+		logger.Info("cancelling in-progress fetch", "section", sectionNames[a.section])
 		a.fetchCancel()
 		a.fetchCancel = nil
 	}
@@ -794,8 +798,11 @@ func (a *App) fetchCurrentSection() tea.Cmd {
 		a.cursor = 0
 		a.loading = false
 		a.err = ""
+		logger.Info("cache hit", "section", sectionNames[a.section], "count", len(cached.items))
 		return nil
 	}
+
+	logger.Info("starting fetch", "section", sectionNames[a.section])
 
 	// Create new context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), a.fetchTimeout)
@@ -1315,43 +1322,28 @@ func (a *App) renderContent() string {
 }
 
 func (a *App) renderTable() string {
+	// Content is set in refreshTableContent() during Update
+	// This just returns the viewport view for scrolling
+	return a.viewport.View()
+}
+
+// refreshTableContent rebuilds the viewport content from current items.
+func (a *App) refreshTableContent() {
+	if len(a.items) == 0 || a.section == secConfigure {
+		return
+	}
+	
 	rows := make([][]string, len(a.items))
 	for i, item := range a.items {
 		rows[i] = item.cols
 	}
 
-	maxRows := a.contentHeight() - 2
-	if maxRows < 3 {
-		maxRows = 20
-	}
-
-	// Determine visible window (scroll)
-	start := 0
-	end := len(rows)
-	if end-start > maxRows {
-		half := maxRows / 2
-		start = a.cursor - half
-		if start < 0 {
-			start = 0
-		}
-		end = start + maxRows
-		if end > len(rows) {
-			end = len(rows)
-			start = end - maxRows
-			if start < 0 {
-				start = 0
-			}
-		}
-	}
-
-	visRows := rows[start:end]
-
 	tbl := components.NewTable(a.cols).
-		WithRows(visRows).
-		WithSelected(a.cursor - start).
+		WithRows(rows).
+		WithSelected(a.cursor).
 		WithWidth(a.width)
 
-	return tbl.Render()
+	a.viewport.SetContent(tbl.Render())
 }
 
 func (a *App) renderDetail() string {

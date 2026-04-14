@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/samrocksc/a0hero/logger"
 )
@@ -59,6 +60,7 @@ func NewClient(baseURL, clientID, clientSecret, tenant string) (*Client, error) 
 
 	c := &Client{
 		httpClient: &http.Client{
+			Timeout:   30 * time.Second,
 			Transport: &authTransport{auth: auth, inner: http.DefaultTransport},
 		},
 		baseURL: baseURL,

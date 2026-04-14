@@ -131,7 +131,7 @@ func (e *EditOverlay) GetErrors() []string {
 
 // fetchCurrentState fetches the current entity state from the API.
 func (e *EditOverlay) fetchCurrentState(historyDir string) tea.Cmd {
-	logger.Debug("fetchCurrentState starting", "entityID", e.entityID)
+	logger.Info("fetching entity for edit", "type", e.entityType, "id", e.entityID)
 	
 	return func() tea.Msg {
 		logger.Debug("fetchCurrentState func executing")
