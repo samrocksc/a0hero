@@ -362,7 +362,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		logger.Debug("handleKey", "key", msg.String())
-		return a.handleKey(msg)
+		a, cmd := a.handleKey(msg)
+		if cmd != nil {
+			logger.Debug("handleKey returned cmd", "cmd_type", fmt.Sprintf("%T", cmd))
+		}
+		return a, cmd
 
 	case authenticated:
 		a.loading = false
@@ -425,6 +429,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, tea.Batch(cmds...)
 
 	case tenantSelectMsg:
+		logger.Info("tenantSelectMsg received!", "name", msg.name)
 		// User selected a tenant to switch to
 		logger.Info("switching to tenant", "name", msg.name)
 		cfg, err := client.Load(filepath.Join(a.configDir, msg.name))
@@ -526,6 +531,7 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "enter":
 			if a.tenantCursor < len(a.tenantList) {
 				selected := a.tenantList[a.tenantCursor]
+					logger.Info("tenant selected", "name", selected, "cursor", a.tenantCursor)
 				return a, func() tea.Msg { return tenantSelectMsg{name: selected} }
 			}
 		case "esc", "left", "h", "q":
@@ -646,6 +652,7 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.tenantSelectMode = true
 			a.tenantList = tenants
 			a.tenantCursor = 0
+			logger.Info("entered tenant select mode", "tenants", tenants)
 			return a, nil
 			case cfgModifyCurrent: // Modify current
 				if a.cfg != nil {
