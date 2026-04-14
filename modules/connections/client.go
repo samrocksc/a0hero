@@ -17,7 +17,7 @@ type Connection struct {
 	EnabledClients []string       `json:"enabled_clients,omitempty"`
 }
 
-// Client wraps the Auth0 /api/v2/connections endpoints.
+// ConnClient wraps the Auth0 /api/v2/connections endpoints.
 type ConnClient struct {
 	c *client.Client
 }
@@ -29,11 +29,14 @@ func New(c *client.Client) *ConnClient {
 
 // List returns all connections from the Auth0 tenant.
 func (cc *ConnClient) List(ctx context.Context) ([]Connection, error) {
-	var result []Connection
+	var result struct {
+		Connections []Connection `json:"connections"`
+		Total      int          `json:"total,omitempty"`
+	}
 	if err := cc.c.GetWithQuery(ctx, "/api/v2/connections", "include_totals=true", &result); err != nil {
 		return nil, fmt.Errorf("connections: List: %w", err)
 	}
-	return result, nil
+	return result.Connections, nil
 }
 
 // Get returns a single connection by ID.

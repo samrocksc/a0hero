@@ -3,7 +3,6 @@ package roles
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/samrocksc/a0hero/client"
@@ -34,18 +33,12 @@ func New(c *client.Client) *Client {
 
 // List returns all roles from the Auth0 tenant.
 func (rc *Client) List(ctx context.Context) ([]Role, error) {
-	var raw json.RawMessage
-	if err := rc.c.GetWithQuery(ctx, "/api/v2/roles", "include_totals=true", &raw); err != nil {
-		return nil, fmt.Errorf("roles: List: %w", err)
+	var result struct {
+		Roles []Role `json:"roles"`
+		Total int    `json:"total,omitempty"`
 	}
-	var result RoleListResponse
-	if err := json.Unmarshal(raw, &result); err != nil {
-		// Auth0 may return a flat array for roles
-		var flat []Role
-		if err2 := json.Unmarshal(raw, &flat); err2 != nil {
-			return nil, fmt.Errorf("roles: List: unmarshal: %w", err)
-		}
-		return flat, nil
+	if err := rc.c.GetWithQuery(ctx, "/api/v2/roles", "include_totals=true", &result); err != nil {
+		return nil, fmt.Errorf("roles: List: %w", err)
 	}
 	return result.Roles, nil
 }

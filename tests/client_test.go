@@ -138,13 +138,13 @@ func TestClient_ModuleClientsUseSharedAuth(t *testing.T) {
 		usersCalled = true
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`[]`))
+		w.Write([]byte(`{"users":[],"total":0,"start":0,"limit":25}`))
 	})
 	mock.Handle("/api/v2/clients", func(w http.ResponseWriter, r *http.Request) {
 		clientsCalled = true
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`[]`))
+		w.Write([]byte(`{"clients":[],"total":0}`))
 	})
 
 	c, err := client.NewClient(mock.URL(), "test-client-id", "test-client-secret", "test-tenant")

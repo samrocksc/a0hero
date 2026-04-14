@@ -24,22 +24,45 @@ type LogEvent struct {
 
 // LogEventTypeCode maps Auth0 log type codes to human-readable descriptions.
 var LogEventTypeCode = map[string]string{
-	"felo": "Failed Login",
-	"fai":  "Failed Login (Invalid Credentials)",
-	"slo":  "Successful Logout",
+	// Authentication events
+	"s":   "Success Login",
+	"ss":  "Success Signup",
+	"sls": "Success Logout",
 	"suca": "Successful Login",
-	"pacu": "Password Change",
-	"fc":   "Failed by Connector",
-	"w":    "Warning",
-	"sep":  "Successful Signup",
-	"fep":  "Failed Signup",
-	"sai":  "Successful API Call",
-	"faii": "Failed API Call",
-	"ss":   "Successful Signup",
+	"seccft": "Success Cross Origin Authentication",
+	"feccft": "Failed Cross Origin Authentication",
+	"f":    "Failed Login",
+	"fco":  "Failed by Connector",
+	"felo": "Failed Login (incorrect password or MFA)",
+	"fai":  "Failed Login (invalid credentials)",
+	"sssa": "Success Signup",
+	"fssa": "Failed Signup",
 	"fs":   "Failed Signup",
-	"cs":   "Code Sent",
+	"sep":  "Success Signup",
+	"fep":  "Failed Signup",
+
+	// API & management
+	"sapi":          "Success API Call",
+	"fapi":          "Failed API Call",
+	"mgmt_api_read": "Management API Read",
+
+	// Password & MFA
+	"pacu": "Password Change",
+	"scpr": "Success Change Password",
+	"fcpr": "Failed Change Password",
+	"scoa": "Success Challenge OAuth",
+	"fcoa": "Failed Challenge OAuth",
+
+	// Tokens & sessions
 	"cls":  "Code/Link Sent",
+	"cs":   "Code Sent",
 	"sv":   "Verification",
+	"w":    "Warning",
+
+	// System events
+	"gd_tenant_update":          "Tenant Updated",
+	"kms_key_state_changed":     "KMS Key State Changed",
+	"kms_key_management_success": "KMS Key Management Success",
 }
 
 // Describe returns a human-readable description of the log type.

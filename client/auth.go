@@ -80,15 +80,20 @@ func (a *Authenticator) GetToken(ctx context.Context) (string, error) {
 
 // refresh fetches a new token from Auth0's oauth/token endpoint.
 func (a *Authenticator) refresh(ctx context.Context) (string, time.Time, error) {
+	// Audience is required for Management API access via client credentials.
+	// It's always https://<domain>/api/v2/
+	audience := a.domain + "/api/v2/"
+
 	reqBody := map[string]string{
 		"client_id":     a.clientID,
 		"client_secret": a.clientSecret,
 		"grant_type":    "client_credentials",
+		"audience":      audience,
 	}
 	bodyBytes, _ := json.Marshal(reqBody)
 
 	url := fmt.Sprintf("%s/oauth/token", a.domain)
-	logger.Debug("requesting token", "url", url)
+	logger.Debug("requesting token", "url", url, "audience", audience)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
 	if err != nil {

@@ -3,7 +3,6 @@ package clients
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/samrocksc/a0hero/client"
@@ -11,16 +10,16 @@ import (
 
 // Client represents an Auth0 application/client.
 type Client struct {
-	ClientID       string   `json:"client_id,omitempty"`
-	Name           string   `json:"name"`
-	AppType        string   `json:"app_type,omitempty"`
-	Description    string   `json:"description,omitempty"`
-	Callbacks      []string `json:"callbacks,omitempty"`
-	RedirectURIs   []string `json:"redirect_uris,omitempty"`
+	ClientID      string   `json:"client_id,omitempty"`
+	Name          string   `json:"name"`
+	AppType       string   `json:"app_type,omitempty"`
+	Description   string   `json:"description,omitempty"`
+	Callbacks     []string `json:"callbacks,omitempty"`
+	RedirectURIs []string `json:"redirect_uris,omitempty"`
 	AllowedOrigins []string `json:"allowed_origins,omitempty"`
-	WebOrigins     []string `json:"web_origins,omitempty"`
-	LogoURI        string   `json:"logo_uri,omitempty"`
-	GrantTypes     []string `json:"grant_types,omitempty"`
+	WebOrigins    []string `json:"web_origins,omitempty"`
+	LogoURI       string   `json:"logo_uri,omitempty"`
+	GrantTypes    []string `json:"grant_types,omitempty"`
 }
 
 // Auth0Client wraps the Auth0 /api/v2/clients endpoints.
@@ -35,15 +34,14 @@ func New(c *client.Client) *Auth0Client {
 
 // List returns all applications/clients from the Auth0 tenant.
 func (ac *Auth0Client) List(ctx context.Context) ([]Client, error) {
-	var raw json.RawMessage
-	if err := ac.c.GetWithQuery(ctx, "/api/v2/clients", "include_totals=true", &raw); err != nil {
+	var result struct {
+		Clients []Client `json:"clients"`
+		Total  int    `json:"total,omitempty"`
+	}
+	if err := ac.c.GetWithQuery(ctx, "/api/v2/clients", "include_totals=true", &result); err != nil {
 		return nil, fmt.Errorf("clients: List: %w", err)
 	}
-	var result []Client
-	if err := json.Unmarshal(raw, &result); err != nil {
-		return nil, fmt.Errorf("clients: List: unmarshal: %w", err)
-	}
-	return result, nil
+	return result.Clients, nil
 }
 
 // Get returns a single client by ID.

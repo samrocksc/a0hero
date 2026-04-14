@@ -3,7 +3,6 @@ package users
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -27,13 +26,6 @@ type User struct {
 	Connections   []string       `json:"identities,omitempty"`
 }
 
-// UserListResponse is the response from the Auth0 users list endpoint.
-// Auth0 returns users as a flat JSON array — not wrapped.
-type UserListResponse struct {
-	Users []User `json:"users"`
-	Total int    `json:"total,omitempty"`
-}
-
 // Client wraps the Auth0 /api/v2/users endpoints.
 type Client struct {
 	c *client.Client
@@ -45,33 +37,44 @@ func New(c *client.Client) *Client {
 }
 
 // List returns users from the Auth0 tenant.
+// Auth0 returns a flat JSON array when include_totals is not set,
+// or {"users":[...], "total":N} when include_totals=true.
 func (uc *Client) List(ctx context.Context, page, perPage int) ([]User, error) {
-	query := fmt.Sprintf("page=%d&per_page=%d&include_totals=true", page, perPage)
-	var raw json.RawMessage
-	if err := uc.c.GetWithQuery(ctx, "/api/v2/users", query, &raw); err != nil {
+	result, err := uc.ListWithTotals(ctx, page, perPage)
+	if err != nil {
+		return nil, err
+	}
+	return result.Users, nil
+}
+
+// UserListResult holds the paginated response from Auth0.
+type UserListResult struct {
+	Users []User `json:"users"`
+	Total int    `json:"total,omitempty"`
+	Start int    `json:"start,omitempty"`
+	Limit int    `json:"limit,omitempty"`
+}
+
+// ListWithTotals returns users with total count information.
+func (uc *Client) ListWithTotals(ctx context.Context, page, perPage int) (*UserListResult, error) {
+	var result UserListResult
+	err := uc.c.GetWithQuery(ctx, "/api/v2/users",
+		fmt.Sprintf("page=%d&per_page=%d&include_totals=true", page, perPage), &result)
+	if err != nil {
 		return nil, fmt.Errorf("users: List: %w", err)
 	}
-
-	// Auth0 returns users as a flat array (with totals in headers or included)
-	var users []User
-	if err := json.Unmarshal(raw, &users); err != nil {
-		return nil, fmt.Errorf("users: List: unmarshal: %w", err)
-	}
-	return users, nil
+	return &result, nil
 }
 
 // Search returns users matching a Lucene query.
 func (uc *Client) Search(ctx context.Context, query string, page, perPage int) ([]User, error) {
-	apiQuery := fmt.Sprintf("q=%s&page=%d&per_page=%d", query, page, perPage)
-	var raw json.RawMessage
-	if err := uc.c.GetWithQuery(ctx, "/api/v2/users", apiQuery, &raw); err != nil {
+	var result UserListResult
+	err := uc.c.GetWithQuery(ctx, "/api/v2/users",
+		fmt.Sprintf("q=%s&page=%d&per_page=%d&include_totals=true", query, page, perPage), &result)
+	if err != nil {
 		return nil, fmt.Errorf("users: Search: %w", err)
 	}
-	var users []User
-	if err := json.Unmarshal(raw, &users); err != nil {
-		return nil, fmt.Errorf("users: Search: unmarshal: %w", err)
-	}
-	return users, nil
+	return result.Users, nil
 }
 
 // Get returns a single user by ID.
