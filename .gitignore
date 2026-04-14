@@ -8,20 +8,22 @@
 # Test binary, built with `go test -c`
 *.test
 
-# Output of the go coverage tool, specifically when used with LiteIDE
+# Output of the go coverage tool
 *.out
 
-# Dependency directories (remove the comment below to include it)
+# Dependency directories
 # vendor/
 
-# .idea files
+# IDE files
 .idea/
-
-# VS Code
 .vscode/
+*.swp
+*.swo
+*~
 
-# MacOS
+# OS files
 .DS_Store
+Thumbs.db
 
 # Build output
 /bin/
@@ -29,3 +31,35 @@
 
 # Debug logs
 logs/
+
+# ---------------------------------------------------------------
+# Credentials & configuration — NEVER commit these
+# ---------------------------------------------------------------
+
+# Environment files
+.env
+.env.*
+*.env
+
+# Auth0 tenant configs (contain client_id + client_secret)
+config/
+!config/.gitkeep
+
+# Any YAML/JSON config that might hold secrets
+*.secret.yaml
+*.secret.yml
+*.secret.json
+
+# Key files
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+
+# Auth0 specific
+.auth0*
+
+# Coverage
+coverage.out
+coverage.html
