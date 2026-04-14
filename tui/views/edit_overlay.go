@@ -86,12 +86,18 @@ func NewEditOverlay(cfg EditOverlayConfig) (*EditOverlay, tea.Cmd) {
 // fetchCurrentState fetches the current entity state from the API.
 func (e *EditOverlay) fetchCurrentState(historyDir string) tea.Cmd {
 	return func() tea.Msg {
-		ctx := context.Background()
+		// Create a context with 10 second timeout
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
 
 		// Fetch current state
 		state, err := e.service.Fetch(ctx, e.entityID)
 		if err != nil {
 			logger.Error("failed to fetch entity", "type", e.entityType, "id", e.entityID, "error", err)
+			// Check if it was a timeout
+			if ctx.Err() == context.DeadlineExceeded {
+				return EditOverlayError{Message: "Request timed out after 10 seconds"}
+			}
 			return EditOverlayError{Message: fmt.Sprintf("Failed to fetch: %v", err)}
 		}
 

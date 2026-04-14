@@ -156,6 +156,13 @@ type moduleItem struct {
 // App model
 // ---------------------------------------------------------------------------
 
+// Cache entry for section data
+type cacheEntry struct {
+	items    []moduleItem
+	cols     []string
+	expiresAt time.Time
+}
+
 // App is the root Bubble Tea model.
 type App struct {
 	configDir string
@@ -172,6 +179,15 @@ type App struct {
 	cols         []string
 	loading      bool
 	err          string
+
+	// Cache for section data (30 seconds)
+	cache     map[section]*cacheEntry
+	cacheTTL  time.Duration
+
+	// Loading context for cancellation
+	fetchCtx    context.Context
+	fetchCancel context.CancelFunc
+	fetchTimeout time.Duration
 
 	// Detail overlay
 	showDetail   bool
@@ -216,11 +232,14 @@ func NewApp(configDir string, debug bool) *App {
 	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("#7C58CB"))
 
 	return &App{
-		configDir: configDir,
-		section:   secUsers,
-		spinner:   s,
-		debug:     debug,
-		loading:   true,
+		configDir:    configDir,
+		section:      secUsers,
+		spinner:       s,
+		debug:         debug,
+		loading:       true,
+		fetchTimeout:  10 * time.Second,
+		cache:         make(map[section]*cacheEntry),
+		cacheTTL:      30 * time.Second,
 	}
 }
 
@@ -344,6 +363,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.cursor = 0
 		a.err = ""
 		a.showDetail = false
+		// Save to cache
+		a.saveToCache(a.section, msg.items, a.cols)
 		logger.Info("module data loaded", "section", sectionNames[a.section], "count", len(msg.items))
 		return a, tea.Batch(cmds...)
 
@@ -383,6 +404,16 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Edit overlay was closed
 		a.editOverlay = nil
 		return a, nil
+	}
+
+	// If we have an active edit overlay, forward all messages to it
+	if a.editOverlay != nil {
+		updated, cmd := a.editOverlay.Update(msg)
+		a.editOverlay = updated.(*views.EditOverlay)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		return a, tea.Batch(cmds...)
 	}
 
 	// Forward to config form if active
@@ -472,6 +503,34 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if a.configCursor > 0 {
 				a.configCursor--
 			}
+		case "tab", "right", "l":
+			// Tab out of configure menu
+			a.section = (a.section + 1) % secCount
+			a.cursor = 0
+			a.configCursor = 0
+			a.err = ""
+			if a.section == secConfigure {
+				a.configForm = nil
+				a.configEditing = false
+				a.buildConfigMenu()
+			} else {
+				cmds = append(cmds, a.fetchCurrentSection())
+			}
+			return a, tea.Batch(cmds...)
+		case "shift+tab", "left", "h":
+			// Shift+tab out of configure menu
+			a.section = (a.section - 1 + secCount) % secCount
+			a.cursor = 0
+			a.configCursor = 0
+			a.err = ""
+			if a.section == secConfigure {
+				a.configForm = nil
+				a.configEditing = false
+				a.buildConfigMenu()
+			} else {
+				cmds = append(cmds, a.fetchCurrentSection())
+			}
+			return a, tea.Batch(cmds...)
 		case "enter":
 			switch a.configCursor {
 			case cfgModifyCurrent: // Modify current
@@ -497,6 +556,8 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			case cfgExit: // Quit
 				return a, tea.Quit
 			}
+		case "esc", "q":
+			return a, tea.Quit
 		}
 		return a, nil
 	}
@@ -506,6 +567,7 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, tea.Quit
 
 	case "tab", "right", "l":
+		a.cancelFetch()
 		a.section = (a.section + 1) % secCount
 		a.cursor = 0
 		a.showDetail = false
@@ -520,6 +582,7 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, tea.Batch(cmds...)
 
 	case "shift+tab", "left", "h":
+		a.cancelFetch()
 		a.section = (a.section - 1 + secCount) % secCount
 		a.cursor = 0
 		a.showDetail = false
@@ -580,7 +643,34 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // Section switching
 // ---------------------------------------------------------------------------
 
+// cancelFetch cancels any in-progress fetch.
+func (a *App) cancelFetch() {
+	if a.fetchCancel != nil {
+		a.fetchCancel()
+		a.fetchCancel = nil
+	}
+	a.loading = false
+}
+
 func (a *App) fetchCurrentSection() tea.Cmd {
+	// Cancel any existing fetch
+	a.cancelFetch()
+
+	// Check cache first
+	if cached := a.getFromCache(a.section); cached != nil {
+		a.items = cached.items
+		a.cols = cached.cols
+		a.cursor = 0
+		a.loading = false
+		a.err = ""
+		return nil
+	}
+
+	// Create new context with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), a.fetchTimeout)
+	a.fetchCtx = ctx
+	a.fetchCancel = cancel
+
 	if a.api == nil {
 		return nil
 	}
@@ -588,35 +678,61 @@ func (a *App) fetchCurrentSection() tea.Cmd {
 	case secUsers:
 		a.cols = usermod.Columns()
 		a.loading = true
-		return a.fetchUsers()
+		return a.fetchUsers(ctx)
 	case secClients:
 		a.cols = clientmod.Columns()
 		a.loading = true
-		return a.fetchClients()
+		return a.fetchClients(ctx)
 	case secRoles:
 		a.cols = rolemod.Columns()
 		a.loading = true
-		return a.fetchRoles()
+		return a.fetchRoles(ctx)
 	case secConnections:
 		a.cols = connmod.Columns()
 		a.loading = true
-		return a.fetchConnections()
+		return a.fetchConnections(ctx)
 	case secLogs:
 		a.cols = logmod.Columns()
 		a.loading = true
-		return a.fetchLogs()
+		return a.fetchLogs(ctx)
 	}
 	return nil
+}
+
+// getFromCache returns cached data if still valid.
+func (a *App) getFromCache(sec section) *cacheEntry {
+	if entry, ok := a.cache[sec]; ok {
+		if time.Now().Before(entry.expiresAt) {
+			return entry
+		}
+		delete(a.cache, sec)
+	}
+	return nil
+}
+
+// saveToCache saves data to cache.
+func (a *App) saveToCache(sec section, items []moduleItem, cols []string) {
+	a.cache[sec] = &cacheEntry{
+		items:    items,
+		cols:     cols,
+		expiresAt: time.Now().Add(a.cacheTTL),
+	}
 }
 
 // ---------------------------------------------------------------------------
 // Data fetchers
 // ---------------------------------------------------------------------------
 
-func (a *App) fetchUsers() tea.Cmd {
+func (a *App) fetchUsers(ctx context.Context) tea.Cmd {
 	return func() tea.Msg {
+		// Check if context was cancelled
+		select {
+		case <-ctx.Done():
+			return moduleItemsMsg{err: fmt.Errorf("request cancelled or timed out")}
+		default:
+		}
 		u := usermod.New(a.api)
-		result, err := u.List(context.Background(), 0, 50)
+		result, err := u.List(ctx, 0, 50)
 		if err != nil {
 			return moduleItemsMsg{err: err}
 		}
@@ -638,10 +754,16 @@ func (a *App) fetchUsers() tea.Cmd {
 	}
 }
 
-func (a *App) fetchClients() tea.Cmd {
+func (a *App) fetchClients(ctx context.Context) tea.Cmd {
 	return func() tea.Msg {
+		// Check if context was cancelled
+		select {
+		case <-ctx.Done():
+			return moduleItemsMsg{err: fmt.Errorf("request cancelled or timed out")}
+		default:
+		}
 		c := clientmod.New(a.api)
-		result, err := c.List(context.Background())
+		result, err := c.List(ctx)
 		if err != nil {
 			return moduleItemsMsg{err: err}
 		}
@@ -664,10 +786,15 @@ func (a *App) fetchClients() tea.Cmd {
 	}
 }
 
-func (a *App) fetchRoles() tea.Cmd {
+func (a *App) fetchRoles(ctx context.Context) tea.Cmd {
 	return func() tea.Msg {
+		select {
+		case <-ctx.Done():
+			return moduleItemsMsg{err: fmt.Errorf("request cancelled or timed out")}
+		default:
+		}
 		r := rolemod.New(a.api)
-		result, err := r.List(context.Background())
+		result, err := r.List(ctx)
 		if err != nil {
 			return moduleItemsMsg{err: err}
 		}
@@ -687,10 +814,15 @@ func (a *App) fetchRoles() tea.Cmd {
 	}
 }
 
-func (a *App) fetchConnections() tea.Cmd {
+func (a *App) fetchConnections(ctx context.Context) tea.Cmd {
 	return func() tea.Msg {
+		select {
+		case <-ctx.Done():
+			return moduleItemsMsg{err: fmt.Errorf("request cancelled or timed out")}
+		default:
+		}
 		c := connmod.New(a.api)
-		result, err := c.List(context.Background())
+		result, err := c.List(ctx)
 		if err != nil {
 			return moduleItemsMsg{err: err}
 		}
@@ -711,10 +843,15 @@ func (a *App) fetchConnections() tea.Cmd {
 	}
 }
 
-func (a *App) fetchLogs() tea.Cmd {
+func (a *App) fetchLogs(ctx context.Context) tea.Cmd {
 	return func() tea.Msg {
+		select {
+		case <-ctx.Done():
+			return moduleItemsMsg{err: fmt.Errorf("request cancelled or timed out")}
+		default:
+		}
 		l := logmod.New(a.api)
-		result, err := l.List(context.Background(), "", 50)
+		result, err := l.List(ctx, "", 50)
 		if err != nil {
 			return moduleItemsMsg{err: err}
 		}
