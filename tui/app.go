@@ -23,6 +23,7 @@ import (
 	usermod "github.com/samrocksc/a0hero/modules/users"
 
 	"github.com/samrocksc/a0hero/logger"
+	"github.com/samrocksc/a0hero/tui/components"
 )
 
 // ---------------------------------------------------------------------------
@@ -107,6 +108,20 @@ var sectionNames = [secCount]string{
 	"Configure",
 }
 
+// Configure sub-menu items
+type configItem int
+
+const (
+	cfgModifyCurrent configItem = iota
+	cfgAddTenant
+	cfgCount
+)
+
+var configItemNames = [cfgCount]string{
+	"Modify Current",
+	"Add Tenant",
+}
+
 // ---------------------------------------------------------------------------
 // Messages
 // ---------------------------------------------------------------------------
@@ -159,12 +174,15 @@ type App struct {
 	showDetail   bool
 	detailContent string
 
-	// Configure form
-	configForm  *huh.Form
-	configName  string
-	configDomain string
-	configCID   string
-	configSecret string
+	// Configure sub-menu
+	configCursor    int
+	configItems     []string
+	configForm     *huh.Form
+	configName     string
+	configDomain   string
+	configCID      string
+	configSecret   string
+	configEditing  bool // true = editing existing, false = adding new
 
 	// Connection state
 	tenant  string
@@ -298,8 +316,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			a.connected = false
 			a.section = secConfigure
-			a.newConfigForm()
-			cmds = append(cmds, a.configForm.Init())
+			a.configForm = nil; a.buildConfigMenu()
 			return a, tea.Batch(cmds...)
 		}
 		a.api = msg.client
@@ -338,6 +355,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.connected = true
 		a.err = ""
 		a.configForm = nil
+		a.configEditing = false
+		a.buildConfigMenu()
 		logger.Info("configure success", "tenant", msg.cfg.Name, "domain", msg.cfg.Domain)
 		a.section = secUsers
 		cmds = append(cmds, a.fetchCurrentSection())
@@ -373,14 +392,15 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
-	// Configure mode — forward most keys to huh
+	// Configure sub-menu — navigate items or handle form
 	if a.section == secConfigure && a.configForm != nil {
 		switch msg.String() {
 		case "ctrl+c":
 			return a, tea.Quit
 		case "esc":
-			a.section = secUsers
+			// esc in form = go back to submenu
 			a.configForm = nil
+			a.configEditing = false
 			return a, nil
 		default:
 			_, cmd := a.configForm.Update(msg)
@@ -389,6 +409,44 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return a, tea.Batch(append(cmds, cmd)...)
 		}
+	}
+
+	// Configure sub-menu — select item
+	if a.section == secConfigure && a.configForm == nil {
+		switch msg.String() {
+		case "down", "j":
+			if a.configCursor < len(a.configItems)-1 {
+				a.configCursor++
+			}
+		case "up", "k":
+			if a.configCursor > 0 {
+				a.configCursor--
+			}
+		case "enter":
+			switch a.configCursor {
+			case 0: // Modify current
+				if a.cfg != nil {
+					a.configEditing = true
+					a.configName = a.cfg.Name
+					a.configDomain = a.cfg.Domain
+					a.configCID = a.cfg.ClientID
+					a.configSecret = a.cfg.ClientSecret
+					a.newConfigForm()
+					return a, a.configForm.Init()
+				} else {
+				a.err = "no tenant connected"
+				}
+			case 1: // Add tenant
+				a.configEditing = false
+				a.configName = ""
+				a.configDomain = ""
+				a.configCID = ""
+				a.configSecret = ""
+				a.newConfigForm()
+				return a, a.configForm.Init()
+			}
+		}
+		return a, nil
 	}
 
 	switch msg.String() {
@@ -401,8 +459,9 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.showDetail = false
 		a.err = ""
 		if a.section == secConfigure {
-			a.newConfigForm()
-			cmds = append(cmds, a.configForm.Init())
+			a.configForm = nil
+			a.configEditing = false
+			a.buildConfigMenu()
 		} else {
 			cmds = append(cmds, a.fetchCurrentSection())
 		}
@@ -414,8 +473,9 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.showDetail = false
 		a.err = ""
 		if a.section == secConfigure {
-			a.newConfigForm()
-			cmds = append(cmds, a.configForm.Init())
+			a.configForm = nil
+			a.configEditing = false
+			a.buildConfigMenu()
 		} else {
 			cmds = append(cmds, a.fetchCurrentSection())
 		}
@@ -624,19 +684,26 @@ func (a *App) fetchLogs() tea.Cmd {
 // ---------------------------------------------------------------------------
 
 func (a *App) newConfigForm() {
-	a.configName = ""
-	a.configDomain = ""
-	a.configCID = ""
-	a.configSecret = ""
-
 	a.configForm = huh.NewForm(
 		huh.NewGroup(
-			huh.NewInput().Title("Tenant Name").Value(&a.configName).Placeholder("dev"),
-			huh.NewInput().Title("Domain").Value(&a.configDomain).Placeholder("dev-tenant.auth0app.com"),
-			huh.NewInput().Title("Client ID").Value(&a.configCID).Placeholder("your-client-id"),
-			huh.NewInput().Title("Client Secret").Value(&a.configSecret).Placeholder("your-client-secret").EchoMode(huh.EchoModePassword),
+		huh.NewInput().Title("Tenant Name").Value(&a.configName).Placeholder("dev"),
+		huh.NewInput().Title("Domain").Value(&a.configDomain).Placeholder("dev-tenant.auth0app.com"),
+		huh.NewInput().Title("Client ID").Value(&a.configCID).Placeholder("your-client-id"),
+		huh.NewInput().Title("Client Secret").Value(&a.configSecret).Placeholder("your-client-secret").EchoMode(huh.EchoModePassword),
 		),
 	).WithWidth(50)
+}
+
+// buildConfigMenu builds the list of configure options based on current state.
+func (a *App) buildConfigMenu() {
+	a.configItems = []string{}
+	if a.cfg != nil {
+		a.configItems = append(a.configItems, fmt.Sprintf("Modify Current: %s (%s)", a.tenant, a.domain))
+	} else {
+		a.configItems = append(a.configItems, "Modify Current (not connected)")
+	}
+	a.configItems = append(a.configItems, "Add Tenant")
+	a.configCursor = 0
 }
 
 func (a *App) submitConfig() tea.Cmd {
@@ -808,33 +875,28 @@ func (a *App) renderContent() string {
 }
 
 func (a *App) renderTable() string {
-	var b strings.Builder
+	rows := make([][]string, len(a.items))
+	for i, item := range a.items {
+		rows[i] = item.cols
+	}
 
-	// Column headers
-	b.WriteString(colHeaderStyle.Render("  " + strings.Join(a.cols, "   ")))
-	b.WriteString("\n")
-	b.WriteString(dividerStyle.Render(strings.Repeat("─", a.width)))
-	b.WriteString("\n")
-
-	// How many rows fit?
-	maxRows := a.contentHeight() - 4 // overhead for header + divider + padding
+	maxRows := a.contentHeight() - 2
 	if maxRows < 3 {
 		maxRows = 20
 	}
 
 	// Determine visible window (scroll)
 	start := 0
-	end := len(a.items)
+	end := len(rows)
 	if end-start > maxRows {
-		// Center cursor in the viewport
 		half := maxRows / 2
 		start = a.cursor - half
 		if start < 0 {
 			start = 0
 		}
 		end = start + maxRows
-		if end > len(a.items) {
-			end = len(a.items)
+		if end > len(rows) {
+			end = len(rows)
 			start = end - maxRows
 			if start < 0 {
 				start = 0
@@ -842,25 +904,14 @@ func (a *App) renderTable() string {
 		}
 	}
 
-	for i := start; i < end; i++ {
-		item := a.items[i]
-		row := strings.Join(item.cols, "   ")
+	visRows := rows[start:end]
 
-		// Pad row to fill width for selection highlight
-		padded := row
-		if len(row) < a.width-2 {
-			padded = row + strings.Repeat(" ", a.width-2-len(row))
-		}
+	tbl := components.NewTable(a.cols).
+		WithRows(visRows).
+		WithSelected(a.cursor - start).
+		WithWidth(a.width)
 
-		if i == a.cursor {
-			b.WriteString(selectedRowStyle.Render("  " + padded))
-		} else {
-			b.WriteString(normalRowStyle.Render("  " + row))
-		}
-		b.WriteString("\n")
-	}
-
-	return b.String()
+	return tbl.Render()
 }
 
 func (a *App) renderDetail() string {
@@ -870,9 +921,34 @@ func (a *App) renderDetail() string {
 func (a *App) renderConfigure() string {
 	var b strings.Builder
 	b.WriteString("\n")
+
 	if a.configForm != nil {
+		// Form is active
+		if a.configEditing {
+			b.WriteString(activeTabStyle.Render("  Editing: " + a.configName))
+		} else {
+			b.WriteString(activeTabStyle.Render("  Add New Tenant"))
+		}
+		b.WriteString("\n\n")
 		b.WriteString(a.configForm.View())
+		return b.String()
 	}
+
+	// Sub-menu
+	b.WriteString(colHeaderStyle.Render("  Configure"))
+	b.WriteString("\n")
+	b.WriteString(dividerStyle.Render(strings.Repeat("─", 30)))
+	b.WriteString("\n")
+
+	for i, item := range a.configItems {
+		if i == a.configCursor {
+			b.WriteString(selectedRowStyle.Render("  ➤ " + item))
+		} else {
+			b.WriteString(normalRowStyle.Render("    " + item))
+		}
+		b.WriteString("\n")
+	}
+
 	return b.String()
 }
 
@@ -881,7 +957,10 @@ func (a *App) renderHelp() string {
 		return helpStyle.Render(" esc/back close detail  •  ↑↓ scroll  •  q quit")
 	}
 	if a.section == secConfigure {
-		return helpStyle.Render(" tab next section  •  esc cancel  •  enter submit")
+		if a.configForm != nil {
+			return helpStyle.Render(" esc back to menu  •  tab next field  •  enter submit")
+		}
+		return helpStyle.Render(" tab switch section  •  ↑↓ choose  •  enter select  •  q quit")
 	}
 	return helpStyle.Render(fmt.Sprintf(
 		" ←/h →/l tab switch  •  ↑/k ↓/j scroll %s  •  enter detail  •  q quit",
