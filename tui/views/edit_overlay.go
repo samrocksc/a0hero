@@ -687,6 +687,16 @@ var (
 		Foreground(lipgloss.Color("#DDDDDD"))
 )
 
+// EntityID returns the entity ID being edited.
+func (e *EditOverlay) EntityID() string {
+	return e.entityID
+}
+
+// EntityType returns the entity type being edited.
+func (e *EditOverlay) EntityType() string {
+	return e.entityType
+}
+
 // Message types
 type EditOverlayReady struct {
 	Session    *edit.EditSession

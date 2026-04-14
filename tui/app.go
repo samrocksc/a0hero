@@ -24,6 +24,7 @@ import (
 
 	"github.com/samrocksc/a0hero/logger"
 	"github.com/samrocksc/a0hero/tui/components"
+	"github.com/samrocksc/a0hero/tui/views"
 )
 
 // ---------------------------------------------------------------------------
@@ -175,6 +176,9 @@ type App struct {
 	// Detail overlay
 	showDetail   bool
 	detailContent string
+
+	// Edit overlay (for inline editing)
+	editOverlay   *views.EditOverlay
 
 	// Configure sub-menu
 	configCursor    configItem
@@ -363,6 +367,22 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.section = secUsers
 		cmds = append(cmds, a.fetchCurrentSection())
 		return a, tea.Batch(cmds...)
+
+	case views.EditOverlayReady, views.EditOverlayError, views.EditOverlaySaved:
+		// Forward edit overlay messages to the overlay
+		if a.editOverlay != nil {
+			updated, cmd := a.editOverlay.Update(msg)
+			a.editOverlay = updated.(*views.EditOverlay)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
+		return a, tea.Batch(cmds...)
+
+	case EditOverlayClosed:
+		// Edit overlay was closed
+		a.editOverlay = nil
+		return a, nil
 	}
 
 	// Forward to config form if active
@@ -520,6 +540,12 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "up", "k":
 		if a.cursor > 0 {
 			a.cursor--
+		}
+
+	case "e":
+		// Open edit overlay for selected item
+		if a.items != nil && a.cursor < len(a.items) && a.api != nil {
+			return a.openEditOverlay()
 		}
 
 	case "enter":
@@ -712,6 +738,48 @@ func (a *App) fetchLogs() tea.Cmd {
 }
 
 // ---------------------------------------------------------------------------
+// Edit Overlay
+// -----------------------------------------------------------------------------
+
+// openEditOverlay opens the edit overlay for the currently selected item.
+func (a *App) openEditOverlay() (tea.Model, tea.Cmd) {
+	if len(a.items) == 0 || a.cursor >= len(a.items) {
+		return a, nil
+	}
+
+	item := a.items[a.cursor]
+
+	homeDir, _ := os.UserHomeDir()
+	historyDir := filepath.Join(homeDir, ".a0hero", "history")
+
+	// Determine entity type and create service based on current section
+	var cfg views.EditOverlayConfig
+
+	switch a.section {
+	case secClients:
+		clientSvc := clientmod.New(a.api)
+		cfg = views.EditOverlayConfig{
+			EntityType: "client",
+			EntityID:   item.id,
+			Fields:     clientmod.ClientFields,
+			Service:    clientSvc,
+			OnClose:    func() tea.Msg { return EditOverlayClosed{} },
+			HistoryDir: historyDir,
+		}
+	default:
+		a.err = "editing not supported for this section"
+		return a, nil
+	}
+
+	var cmd tea.Cmd
+	a.editOverlay, cmd = views.NewEditOverlay(cfg)
+	return a, cmd
+}
+
+// Message for edit overlay closed
+type EditOverlayClosed struct{}
+
+// ---------------------------------------------------------------------------
 // Configure
 // ---------------------------------------------------------------------------
 
@@ -812,6 +880,11 @@ func (a *App) View() string {
 		return fmt.Sprintf("\n  %s Connecting to Auth0...\n", a.spinner.View())
 	}
 
+	// Render edit overlay if active
+	if a.editOverlay != nil {
+		return a.renderEditOverlay()
+	}
+
 	var b strings.Builder
 
 	// 1. Tab bar
@@ -836,6 +909,33 @@ func (a *App) View() string {
 	// 5. Help bar
 	b.WriteString("\n")
 	b.WriteString(a.renderHelp())
+
+	return b.String()
+}
+
+// renderEditOverlay renders the edit overlay content.
+func (a *App) renderEditOverlay() string {
+	var b strings.Builder
+
+	// Tab bar (same as normal)
+	b.WriteString(a.renderTabs())
+	b.WriteString("\n")
+
+	// Info bar
+	status := successStyle.Render("✓ Editing: " + a.editOverlay.EntityID())
+	b.WriteString(status)
+	b.WriteString("\n")
+
+	// Divider
+	b.WriteString(dividerStyle.Render(strings.Repeat("─", a.width)))
+	b.WriteString("\n")
+
+	// Edit overlay content
+	b.WriteString(a.editOverlay.View())
+
+	// Help bar
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render(" esc: close"))
 
 	return b.String()
 }
@@ -996,7 +1096,7 @@ func (a *App) renderHelp() string {
 		return helpStyle.Render(" tab/h← switch section  •  ↑↓ choose  •  enter select  •  q quit")
 	}
 	return helpStyle.Render(fmt.Sprintf(
-		" ←/h →/l tab switch  •  ↑/k ↓/j scroll %s  •  enter detail  •  q quit",
+		" ←/h →/l tab switch  •  ↑/k ↓/j scroll %s  •  enter detail  •  e edit  •  q quit",
 		f.dimCount(a.cursor, len(a.items)),
 	))
 }
