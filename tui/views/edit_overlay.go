@@ -114,6 +114,21 @@ func (e *EditOverlay) HandleSaved() {
 	e.mode = modeView
 }
 
+// Loading returns whether the overlay is still loading.
+func (e *EditOverlay) Loading() bool {
+	return e.loading
+}
+
+// GetSession returns the edit session.
+func (e *EditOverlay) GetSession() *edit.EditSession {
+	return e.session
+}
+
+// GetErrors returns any errors.
+func (e *EditOverlay) GetErrors() []string {
+	return e.errors
+}
+
 // fetchCurrentState fetches the current entity state from the API.
 func (e *EditOverlay) fetchCurrentState(historyDir string) tea.Cmd {
 	logger.Debug("fetchCurrentState starting", "entityID", e.entityID)

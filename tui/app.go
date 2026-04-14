@@ -113,16 +113,17 @@ var sectionNames = [secCount]string{
 type configItem int
 
 const (
-	cfgModifyCurrent configItem = iota
+	cfgCurrent configItem = iota
+	cfgChangeTenant
 	cfgAddTenant
+	cfgModifyCurrent
 	cfgExit
 	cfgCount
 )
 
-var configItemNames = [cfgCount]string{
-	"Modify Current",
-	"Add Tenant",
-	"Exit",
+// tenantSelectMsg is sent when user selects a tenant to switch to.
+type tenantSelectMsg struct {
+	name string
 }
 
 // ---------------------------------------------------------------------------
@@ -205,6 +206,11 @@ type App struct {
 	configCID      string
 	configSecret   string
 	configEditing  bool // true = editing existing, false = adding new
+	
+	// Tenant selection mode
+	tenantSelectMode bool
+	tenantList      []string
+	tenantCursor    int
 
 	// Connection state
 	tenant  string
@@ -241,6 +247,26 @@ func NewApp(configDir string, debug bool) *App {
 		cache:         make(map[section]*cacheEntry),
 		cacheTTL:      30 * time.Second,
 	}
+}
+
+// SetAPI sets the API client directly (for testing).
+func (a *App) SetAPI(api *client.Client, cfg *client.Config) {
+	a.api = api
+	a.cfg = cfg
+	a.tenant = cfg.Name
+	a.domain = cfg.Domain
+	a.connected = true
+	a.loading = false
+}
+
+// GetEditOverlay returns the edit overlay if active (for testing).
+func (a *App) GetEditOverlay() interface{} {
+	return a.editOverlay
+}
+
+// IsConnected returns whether the app is connected (for testing).
+func (a *App) IsConnected() bool {
+	return a.connected
 }
 
 // ---------------------------------------------------------------------------
@@ -324,6 +350,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.height = msg.Height
 		a.viewport.Width = msg.Width
 		a.viewport.Height = a.contentHeight()
+		// Forward to edit overlay if active
+		if a.editOverlay != nil {
+			_, cmd := a.editOverlay.Update(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
 		cmds = append(cmds, a.fetchCurrentSection())
 		return a, tea.Batch(cmds...)
 
@@ -385,8 +418,37 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.configForm = nil
 		a.configEditing = false
 		a.buildConfigMenu()
+		a.cache = make(map[section]*cacheEntry) // Clear cache on tenant switch
 		logger.Info("configure success", "tenant", msg.cfg.Name, "domain", msg.cfg.Domain)
 		a.section = secUsers
+		cmds = append(cmds, a.fetchCurrentSection())
+		return a, tea.Batch(cmds...)
+
+	case tenantSelectMsg:
+		// User selected a tenant to switch to
+		logger.Info("switching to tenant", "name", msg.name)
+		cfg, err := client.Load(filepath.Join(a.configDir, msg.name))
+		if err != nil {
+			a.err = fmt.Sprintf("failed to load tenant: %v", err)
+			return a, tea.Batch(cmds...)
+		}
+		c, err := client.NewClientFromConfig(cfg)
+		if err != nil {
+			a.err = fmt.Sprintf("failed to connect: %v", err)
+			return a, tea.Batch(cmds...)
+		}
+		a.api = c
+		a.cfg = cfg
+		a.tenant = cfg.Name
+		a.domain = cfg.Domain
+		a.connected = true
+		a.err = ""
+		a.tenantSelectMode = false
+		a.cache = make(map[section]*cacheEntry) // Clear cache on tenant switch
+		logger.Info("tenant switch success", "tenant", cfg.Name, "domain", cfg.Domain)
+		a.section = secUsers
+		a.configForm = nil
+		a.buildConfigMenu()
 		cmds = append(cmds, a.fetchCurrentSection())
 		return a, tea.Batch(cmds...)
 
@@ -449,6 +511,30 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
+
+	// Tenant selection mode
+	if a.tenantSelectMode {
+		switch msg.String() {
+		case "up", "k":
+			if a.tenantCursor > 0 {
+				a.tenantCursor--
+			}
+		case "down", "j":
+			if a.tenantCursor < len(a.tenantList)-1 {
+				a.tenantCursor++
+			}
+		case "enter":
+			if a.tenantCursor < len(a.tenantList) {
+				selected := a.tenantList[a.tenantCursor]
+				return a, func() tea.Msg { return tenantSelectMsg{name: selected} }
+			}
+		case "esc", "left", "h", "q":
+			a.tenantSelectMode = false
+			a.tenantCursor = 0
+			return a, nil
+		}
+		return a, nil
+	}
 
 	// Detail overlay mode
 	if a.showDetail {
@@ -549,6 +635,18 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return a, tea.Batch(cmds...)
 		case "enter":
 			switch a.configCursor {
+			case cfgCurrent: // Just shows current status, no action
+				return a, nil
+			case cfgChangeTenant: // Enter tenant selection mode
+			tenants, _ := client.AvailableTenants(a.configDir)
+			if len(tenants) == 0 {
+				a.err = "no tenants configured"
+				return a, nil
+			}
+			a.tenantSelectMode = true
+			a.tenantList = tenants
+			a.tenantCursor = 0
+			return a, nil
 			case cfgModifyCurrent: // Modify current
 				if a.cfg != nil {
 					a.configEditing = true
@@ -962,12 +1060,38 @@ func (a *App) newConfigForm() {
 // buildConfigMenu builds the list of configure options based on current state.
 func (a *App) buildConfigMenu() {
 	a.configItems = []string{}
-	if a.cfg != nil {
-		a.configItems = append(a.configItems, fmt.Sprintf("Modify Current: %s (%s)", a.tenant, a.domain))
-	} else {
-		a.configItems = append(a.configItems, "Modify Current (not connected)")
+	
+	// List all available tenants
+	tenants, err := client.AvailableTenants(a.configDir)
+	if err != nil {
+		tenants = []string{}
 	}
+	
+	// Current tenant indicator
+	if a.cfg != nil {
+		a.configItems = append(a.configItems, fmt.Sprintf("Current: %s @ %s", a.tenant, a.domain))
+	} else {
+		a.configItems = append(a.configItems, "Current: (not connected)")
+	}
+	
+	// Change Tenant option
+	a.configItems = append(a.configItems, "Change Tenant")
+	
+	// List available tenants
+	if len(tenants) > 0 {
+		a.configItems = append(a.configItems, "───────────────")
+		a.configItems = append(a.configItems, "Available Tenants:")
+		for _, t := range tenants {
+			a.configItems = append(a.configItems, "  » "+t)
+		}
+		a.configItems = append(a.configItems, "───────────────")
+	}
+	
+	// Add/Modify options
 	a.configItems = append(a.configItems, "Add Tenant")
+	if a.cfg != nil {
+		a.configItems = append(a.configItems, "Modify Current Tenant")
+	}
 	a.configItems = append(a.configItems, "Exit")
 	a.configCursor = 0
 }
@@ -1047,6 +1171,7 @@ func (a *App) View() string {
 
 	// Render edit overlay if active
 	if a.editOverlay != nil {
+		logger.Debug("rendering edit overlay")
 		return a.renderEditOverlay()
 	}
 
@@ -1219,6 +1344,28 @@ func (a *App) renderDetail() string {
 func (a *App) renderConfigure() string {
 	var b strings.Builder
 	b.WriteString("\n")
+
+	if a.tenantSelectMode {
+		// Tenant selection mode
+		b.WriteString(colHeaderStyle.Render("  Select Tenant"))
+		b.WriteString("\n")
+		b.WriteString(dividerStyle.Render(strings.Repeat("─", 30)))
+		b.WriteString("\n")
+		b.WriteString(helpStyle.Render(" Use ↑/↓ to select, Enter to connect\n"))
+		b.WriteString("\n")
+		
+		for i, tenant := range a.tenantList {
+			if tenant == "---" {
+				b.WriteString(normalRowStyle.Render("    " + tenant))
+			} else if i == a.tenantCursor {
+				b.WriteString(selectedRowStyle.Render("  ➤ " + tenant))
+			} else {
+				b.WriteString(normalRowStyle.Render("    » " + tenant))
+			}
+			b.WriteString("\n")
+		}
+		return b.String()
+	}
 
 	if a.configForm != nil {
 		// Form is active

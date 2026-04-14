@@ -1,0 +1,3 @@
+script: illegal option -- c
+usage: script [-aeFkpqr] [-t time] [file [command ...]]
+       script -p [-deq] [-T fmt] [file]
