@@ -22,8 +22,8 @@ type EditOverlay struct {
 	service    edit.EntityService
 
 	// UI state
-	fieldInputs   map[string]string // current input values for text fields
-	tagInputs     map[string][]string // current values for tag fields
+	fieldInputs   map[string]string   // current values for text/scalar fields
+	tagInputs     map[string][]string  // current values for tag array fields
 	focusedField  int
 	mode          editMode
 	errors        []string
@@ -31,13 +31,19 @@ type EditOverlay struct {
 	loading       bool
 	dirty         bool
 
+	// Field editing sub-state (when typing a value)
+	editing       bool   // true when actively typing into a field
+	editBuffer    string // the text being typed
+	editFieldKey  string // which field key we're editing
+	editCursorPos int    // cursor position in edit buffer
+
 	// Dimensions
 	width  int
 	height int
 
 	// Callbacks
-	onClose func() tea.Msg
-	onSave  func(map[string]interface{}) tea.Msg
+	onClose    func() tea.Msg
+	onSave     func(map[string]interface{}) tea.Msg
 	historyDir string
 }
 
@@ -45,7 +51,7 @@ type editMode int
 
 const (
 	modeView editMode = iota
-	modeEdit
+	modeEdit   // navigating fields, press enter to start typing
 	modeSaving
 )
 
@@ -83,7 +89,7 @@ func NewEditOverlay(cfg EditOverlayConfig) (*EditOverlay, tea.Cmd) {
 func (e *EditOverlay) SetDimensions(width, height int) {
 	e.width = width
 	if height > 6 {
-		e.height = height - 4 // reserve for tabs/info/help
+		e.height = height - 4
 	} else {
 		e.height = height
 	}
@@ -97,7 +103,6 @@ func (e *EditOverlay) HandleReady(session *edit.EditSession) {
 	e.session = session
 	e.loading = false
 	e.dirty = false
-	// Populate input values from session
 	e.fieldInputs = make(map[string]string)
 	e.tagInputs = make(map[string][]string)
 	for _, field := range e.fields {
@@ -106,6 +111,8 @@ func (e *EditOverlay) HandleReady(session *edit.EditSession) {
 		case edit.FieldTagArray:
 			if arr, ok := val.([]string); ok {
 				e.tagInputs[field.Key] = arr
+			} else {
+				e.tagInputs[field.Key] = []string{}
 			}
 		default:
 			e.fieldInputs[field.Key] = fmt.Sprintf("%v", val)
@@ -146,44 +153,41 @@ func (e *EditOverlay) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		e.width = msg.Width
 		e.height = msg.Height
 		return e, nil
-
 	case EditOverlayReady:
 		e.HandleReady(msg.Session)
 		return e, nil
-
 	case EditOverlayError:
 		e.HandleError(msg.Message)
 		return e, nil
-
 	case EditOverlaySaved:
 		e.HandleSaved()
 		return e, nil
-
 	case tea.KeyMsg:
 		return e.handleKey(msg)
 	}
-
 	return e, nil
 }
 
-// handleKey handles key events.
+// handleKey routes key events based on current state.
 func (e *EditOverlay) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	key := msg.String()
+	// If actively editing a field value, handle input
+	if e.editing {
+		return e.handleFieldInput(msg)
+	}
 
 	switch e.mode {
 	case modeView:
-		return e.handleViewKey(key)
+		return e.handleViewKey(msg)
 	case modeEdit:
-		return e.handleEditKey(key)
+		return e.handleEditKey(msg)
 	case modeSaving:
-		// No input while saving
 		return e, nil
 	}
 	return e, nil
 }
 
-func (e *EditOverlay) handleViewKey(key string) (tea.Model, tea.Cmd) {
-	switch key {
+func (e *EditOverlay) handleViewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
 	case "esc", "q":
 		return e, e.onClose
 	case "e":
@@ -201,17 +205,10 @@ func (e *EditOverlay) handleViewKey(key string) (tea.Model, tea.Cmd) {
 	return e, nil
 }
 
-func (e *EditOverlay) handleEditKey(key string) (tea.Model, tea.Cmd) {
-	editableFields := e.getEditableFields()
-	
-	switch key {
+func (e *EditOverlay) handleEditKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
 	case "esc":
-		if e.dirty {
-			e.mode = modeView
-			e.dirty = false
-		} else {
-			e.mode = modeView
-		}
+		e.mode = modeView
 		return e, nil
 	case "ctrl+s":
 		return e, e.submit()
@@ -225,15 +222,132 @@ func (e *EditOverlay) handleEditKey(key string) (tea.Model, tea.Cmd) {
 			e.focusedField--
 		}
 	case "down", "j", "tab":
-		if e.focusedField < len(editableFields)-1 {
+		if e.focusedField < len(e.fields)-1 {
 			e.focusedField++
 		}
 	case "shift+tab":
 		if e.focusedField > 0 {
 			e.focusedField--
 		}
+	case "enter":
+		// Start editing the focused field
+		field := e.fields[e.focusedField]
+		if field.ReadOnly {
+			return e, nil
+		}
+		e.editing = true
+		e.editFieldKey = field.Key
+		e.editCursorPos = 0
+		// Pre-fill with current value
+		switch field.Type {
+		case edit.FieldTagArray:
+			if tags, ok := e.tagInputs[field.Key]; ok {
+				e.editBuffer = strings.Join(tags, ", ")
+			}
+		default:
+			e.editBuffer = e.fieldInputs[field.Key]
+		}
+		e.editCursorPos = len(e.editBuffer)
 	}
 	return e, nil
+}
+
+// handleFieldInput handles keystrokes while typing into a field.
+func (e *EditOverlay) handleFieldInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		// Save the typed value back to state, stop editing, return to field nav
+		e.commitEditBuffer()
+		e.editing = false
+		e.dirty = true
+		return e, nil
+	case "enter":
+		// For tag arrays, add a tag; for text, commit and move to next field
+		field := e.getFieldDef(e.editFieldKey)
+		if field != nil && field.Type == edit.FieldTagArray {
+			// Add the buffer as a new tag
+			tag := strings.TrimSpace(e.editBuffer)
+			if tag != "" {
+				e.tagInputs[e.editFieldKey] = append(e.tagInputs[e.editFieldKey], tag)
+				e.dirty = true
+			}
+			e.editBuffer = ""
+			e.editCursorPos = 0
+		} else {
+			// Commit text value and move down
+			e.commitEditBuffer()
+			e.editing = false
+			e.dirty = true
+			// Move to next field
+			if e.focusedField < len(e.fields)-1 {
+				e.focusedField++
+			}
+		}
+		return e, nil
+	case "ctrl+z":
+		// Undo during editing: revert to original
+		if e.session != nil {
+			val := e.getFieldValue(e.session, e.editFieldKey)
+			switch e.getFieldDef(e.editFieldKey).Type {
+			case edit.FieldTagArray:
+				if arr, ok := val.([]string); ok {
+					e.editBuffer = strings.Join(arr, ", ")
+				}
+			default:
+				e.editBuffer = fmt.Sprintf("%v", val)
+			}
+			e.editCursorPos = len(e.editBuffer)
+		}
+		return e, nil
+	case "backspace":
+		if e.editCursorPos > 0 {
+			e.editBuffer = e.editBuffer[:e.editCursorPos-1] + e.editBuffer[e.editCursorPos:]
+			e.editCursorPos--
+		}
+	case "left":
+		if e.editCursorPos > 0 {
+			e.editCursorPos--
+		}
+	case "right":
+		if e.editCursorPos < len(e.editBuffer) {
+			e.editCursorPos++
+		}
+	default:
+		// Type the character into the buffer
+		ch := msg.String()
+		// Filter out multi-char special keys
+		if len(ch) == 1 || (len(ch) > 1 && ch[0] != '[' && ch[0] != 27) {
+			// For tag arrays, don't insert raw keys
+			if len(ch) == 1 {
+				e.editBuffer = e.editBuffer[:e.editCursorPos] + ch + e.editBuffer[e.editCursorPos:]
+				e.editCursorPos++
+			}
+		}
+	}
+	return e, nil
+}
+
+// commitEditBuffer writes the edit buffer back to the field value store.
+func (e *EditOverlay) commitEditBuffer() {
+	field := e.getFieldDef(e.editFieldKey)
+	if field == nil {
+		return
+	}
+	switch field.Type {
+	case edit.FieldTagArray:
+		// Parse comma-separated tags
+		parts := strings.Split(e.editBuffer, ",")
+		tags := []string{}
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				tags = append(tags, p)
+			}
+		}
+		e.tagInputs[e.editFieldKey] = tags
+	default:
+		e.fieldInputs[e.editFieldKey] = e.editBuffer
+	}
 }
 
 func (e *EditOverlay) getEditableFields() []edit.FieldDef {
@@ -246,12 +360,19 @@ func (e *EditOverlay) getEditableFields() []edit.FieldDef {
 	return result
 }
 
+func (e *EditOverlay) getFieldDef(key string) *edit.FieldDef {
+	for i := range e.fields {
+		if e.fields[i].Key == key {
+			return &e.fields[i]
+		}
+	}
+	return nil
+}
+
 // submit saves the changes.
 func (e *EditOverlay) submit() tea.Cmd {
 	e.mode = modeSaving
 	e.errors = nil
-	
-	// Build changes map from inputs
 	changes := make(map[string]interface{})
 	for _, field := range e.fields {
 		if field.ReadOnly {
@@ -268,7 +389,6 @@ func (e *EditOverlay) submit() tea.Cmd {
 			}
 		}
 	}
-	
 	if e.onSave != nil {
 		return func() tea.Msg { return e.onSave(changes) }
 	}
@@ -302,9 +422,7 @@ func (e *EditOverlay) View() string {
 	}
 
 	if e.loading {
-		return lipgloss.NewStyle().
-			Width(e.width).
-			Render("Loading...")
+		return lipgloss.NewStyle().Width(e.width).Render("Loading...")
 	}
 
 	if len(e.errors) > 0 {
@@ -313,10 +431,10 @@ func (e *EditOverlay) View() string {
 
 	var b strings.Builder
 
-	// Header with mode indicator
+	// Header
 	modeLabel := "VIEW"
 	modeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#888888"))
-	if e.mode == modeEdit {
+	if e.mode == modeEdit || e.editing {
 		modeLabel = "EDIT"
 		modeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFD700")).Bold(true)
 	}
@@ -325,7 +443,7 @@ func (e *EditOverlay) View() string {
 		modeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF8800")).Bold(true)
 	}
 
-	header := lipgloss.NewStyle().Bold(true).Render(fmt.Sprintf("  %s %s", e.entityType, e.entityID))
+	header := lipgloss.NewStyle().Bold(true).Render(fmt.Sprintf("  %s: %s", e.entityType, e.entityID))
 	b.WriteString(header)
 	b.WriteString("  ")
 	b.WriteString(modeStyle.Render(fmt.Sprintf("[%s]", modeLabel)))
@@ -335,7 +453,7 @@ func (e *EditOverlay) View() string {
 	if e.successMsg != "" {
 		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#00FF00")).Render("  ✓ " + e.successMsg))
 		b.WriteString("\n\n")
-		e.successMsg = "" // Clear after showing
+		e.successMsg = ""
 	}
 
 	// Fields
@@ -345,13 +463,18 @@ func (e *EditOverlay) View() string {
 		b.WriteString("\n")
 	}
 
-	// Footer
+	// Footer help
 	b.WriteString("\n")
-	helpText := " esc: close  •  e: edit  •  ↑↓: navigate"
-	if e.mode == modeEdit {
-		helpText = " esc: cancel  •  ctrl+s: save  •  ctrl+z: undo  •  ↑↓: navigate"
+	if e.editing {
+		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#666666")).Render(
+			" esc: confirm & back  •  enter: confirm & next  •  ctrl+z: revert"))
+	} else if e.mode == modeEdit {
+		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#666666")).Render(
+			" esc: back to view  •  enter: edit field  •  ctrl+s: save all  •  ctrl+z: undo  •  ↑↓: navigate"))
+	} else {
+		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#666666")).Render(
+			" esc: close  •  e: edit  •  ↑↓: navigate"))
 	}
-	b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#666666")).Render(helpText))
 
 	return b.String()
 }
@@ -370,23 +493,34 @@ func (e *EditOverlay) renderErrors() string {
 }
 
 func (e *EditOverlay) renderField(field edit.FieldDef, focused bool) string {
-	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Width(24)
+	labelWidth := 24
+	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Width(labelWidth)
 	valueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#CCCCCC"))
 	focusedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF")).Background(lipgloss.Color("#333355"))
-	readOnlyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#666666"))
+	readOnlyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#555555"))
+	editingStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF")).Background(lipgloss.Color("#224488"))
 
 	label := labelStyle.Render(field.Label + ":")
+
+	// We're actively editing this field — show the cursor
+	if e.editing && e.editFieldKey == field.Key {
+		before := e.editBuffer[:e.editCursorPos]
+		after := e.editBuffer[e.editCursorPos:]
+		cursor := "▎"
+		rendered := editingStyle.Render(before + cursor + after)
+		return fmt.Sprintf("%s %s", label, rendered)
+	}
 
 	// Get current value
 	var value string
 	switch field.Type {
 	case edit.FieldTagArray:
 		if tags, ok := e.tagInputs[field.Key]; ok {
-			value = strings.Join(tags, ", ")
-		}
-	case edit.FieldBool:
-		if v, ok := e.fieldInputs[field.Key]; ok {
-			value = v
+			if len(tags) == 0 {
+				value = "(none)"
+			} else {
+				value = strings.Join(tags, ", ")
+			}
 		}
 	default:
 		if v, ok := e.fieldInputs[field.Key]; ok {
@@ -405,7 +539,8 @@ func (e *EditOverlay) renderField(field edit.FieldDef, focused bool) string {
 	}
 
 	if e.mode == modeEdit && focused {
-		return fmt.Sprintf("%s %s", label, focusedStyle.Render("▎"+value))
+		prefix := "▶ "
+		return fmt.Sprintf("%s %s", label, focusedStyle.Render(prefix+value))
 	}
 
 	if e.mode == modeEdit {
