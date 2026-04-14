@@ -114,12 +114,14 @@ type configItem int
 const (
 	cfgModifyCurrent configItem = iota
 	cfgAddTenant
+	cfgExit
 	cfgCount
 )
 
 var configItemNames = [cfgCount]string{
 	"Modify Current",
 	"Add Tenant",
+	"Exit",
 }
 
 // ---------------------------------------------------------------------------
@@ -175,7 +177,7 @@ type App struct {
 	detailContent string
 
 	// Configure sub-menu
-	configCursor    int
+	configCursor    configItem
 	configItems     []string
 	configForm     *huh.Form
 	configName     string
@@ -402,6 +404,34 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.configForm = nil
 			a.configEditing = false
 			return a, nil
+		case "tab", "right", "l":
+			// Tab out of form = move to next section
+			a.configForm = nil
+			a.configEditing = false
+			a.section = (a.section + 1) % secCount
+			a.cursor = 0
+			a.showDetail = false
+			a.err = ""
+			if a.section == secConfigure {
+				a.buildConfigMenu()
+			} else {
+				cmds = append(cmds, a.fetchCurrentSection())
+			}
+			return a, tea.Batch(cmds...)
+		case "shift+tab", "left", "h":
+			// Shift+tab out of form = move to previous section
+			a.configForm = nil
+			a.configEditing = false
+			a.section = (a.section - 1 + secCount) % secCount
+			a.cursor = 0
+			a.showDetail = false
+			a.err = ""
+			if a.section == secConfigure {
+				a.buildConfigMenu()
+			} else {
+				cmds = append(cmds, a.fetchCurrentSection())
+			}
+			return a, tea.Batch(cmds...)
 		default:
 			_, cmd := a.configForm.Update(msg)
 			if a.configForm.State == huh.StateCompleted {
@@ -415,7 +445,7 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if a.section == secConfigure && a.configForm == nil {
 		switch msg.String() {
 		case "down", "j":
-			if a.configCursor < len(a.configItems)-1 {
+			if a.configCursor < configItem(len(a.configItems))-1 {
 				a.configCursor++
 			}
 		case "up", "k":
@@ -424,7 +454,7 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		case "enter":
 			switch a.configCursor {
-			case 0: // Modify current
+			case cfgModifyCurrent: // Modify current
 				if a.cfg != nil {
 					a.configEditing = true
 					a.configName = a.cfg.Name
@@ -436,7 +466,7 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				} else {
 				a.err = "no tenant connected"
 				}
-			case 1: // Add tenant
+			case cfgAddTenant: // Add tenant
 				a.configEditing = false
 				a.configName = ""
 				a.configDomain = ""
@@ -444,6 +474,8 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				a.configSecret = ""
 				a.newConfigForm()
 				return a, a.configForm.Init()
+			case cfgExit: // Quit
+				return a, tea.Quit
 			}
 		}
 		return a, nil
@@ -703,6 +735,7 @@ func (a *App) buildConfigMenu() {
 		a.configItems = append(a.configItems, "Modify Current (not connected)")
 	}
 	a.configItems = append(a.configItems, "Add Tenant")
+	a.configItems = append(a.configItems, "Exit")
 	a.configCursor = 0
 }
 
@@ -941,7 +974,7 @@ func (a *App) renderConfigure() string {
 	b.WriteString("\n")
 
 	for i, item := range a.configItems {
-		if i == a.configCursor {
+		if i == int(a.configCursor) {
 			b.WriteString(selectedRowStyle.Render("  ➤ " + item))
 		} else {
 			b.WriteString(normalRowStyle.Render("    " + item))
@@ -958,9 +991,9 @@ func (a *App) renderHelp() string {
 	}
 	if a.section == secConfigure {
 		if a.configForm != nil {
-			return helpStyle.Render(" esc back to menu  •  tab next field  •  enter submit")
+			return helpStyle.Render(" esc back to menu  •  tab/h← switch section  •  enter submit")
 		}
-		return helpStyle.Render(" tab switch section  •  ↑↓ choose  •  enter select  •  q quit")
+		return helpStyle.Render(" tab/h← switch section  •  ↑↓ choose  •  enter select  •  q quit")
 	}
 	return helpStyle.Render(fmt.Sprintf(
 		" ←/h →/l tab switch  •  ↑/k ↓/j scroll %s  •  enter detail  •  q quit",
