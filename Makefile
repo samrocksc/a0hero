@@ -57,7 +57,10 @@ generate: ## Generate types and mocks from OpenAPI spec
 ## ========== RUNNING ==========
 
 run: ## Run a0hero (from config/dev.yaml by default)
-	a0hero run
+	go run ./cmd/a0hero
+
+run-debug: ## Run with debug logging
+	go run ./cmd/a0hero --debug
 
 run-dev: ## Run with dev tenant
 	AUTH0_TENANT=dev a0hero run

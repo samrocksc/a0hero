@@ -20,6 +20,8 @@ import (
 	logmod "github.com/samrocksc/a0hero/modules/logs"
 	rolemod "github.com/samrocksc/a0hero/modules/roles"
 	usermod "github.com/samrocksc/a0hero/modules/users"
+
+	"github.com/samrocksc/a0hero/logger"
 )
 
 // ---------------------------------------------------------------------------
@@ -134,6 +136,7 @@ type App struct {
 
 	// Status
 	loading bool
+	debug   bool
 	spinner spinner.Model
 	err     string
 	tenant  string
@@ -143,13 +146,14 @@ type App struct {
 }
 
 // NewApp creates a new App model.
-func NewApp(configDir string) *App {
+func NewApp(configDir string, debug bool) *App {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("#7C58CB"))
 
 	return &App{
 		configDir: configDir,
+		debug:     debug,
 		view:      viewMainMenu,
 		menuItems: []string{"Users", "Clients (Applications)", "Roles", "Connections", "Logs", "Configure", "Quit"},
 		spinner:   s,
@@ -167,12 +171,15 @@ func (a *App) Init() tea.Cmd {
 
 func (a *App) loadConfig() tea.Cmd {
 	return func() tea.Msg {
+		logger.Info("loading config", "config_dir", a.configDir)
+
 		// Check for env vars first
 		clientID := os.Getenv("AUTH0_CLIENT_ID")
 		clientSecret := os.Getenv("AUTH0_CLIENT_SECRET")
 		domain := os.Getenv("AUTH0_DOMAIN")
 
 		if clientID != "" && clientSecret != "" && domain != "" {
+			logger.Info("using env vars for auth", "domain", domain)
 			cfg := &client.Config{
 				Name:         "env",
 				Domain:       domain,
@@ -189,9 +196,11 @@ func (a *App) loadConfig() tea.Cmd {
 		// Try to load from config dir
 		tenants, err := client.AvailableTenants(a.configDir)
 		if err != nil || len(tenants) == 0 {
+			logger.Warn("no tenants found in config dir")
 			return authenticated{err: fmt.Errorf("no tenants configured")}
 		}
 
+		logger.Info("loading tenant config", "tenant", tenants[0])
 		cfg, err := client.Load(filepath.Join(a.configDir, tenants[0]))
 		if err != nil {
 			return authenticated{err: err}
@@ -199,8 +208,9 @@ func (a *App) loadConfig() tea.Cmd {
 
 		c, err := client.NewClientFromConfig(cfg)
 		if err != nil {
-			return authenticated{client: nil, cfg: cfg, err: err}
+			return authenticated{client: c, cfg: cfg, err: err}
 		}
+		logger.Info("connected to tenant", "tenant", cfg.Name, "domain", cfg.Domain)
 		return authenticated{client: c, cfg: cfg}
 	}
 }
@@ -244,6 +254,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.loading = false
 		if msg.err != nil {
 			a.err = msg.err.Error()
+			logger.Error("authentication failed", "error", msg.err)
 			if strings.Contains(a.err, "no tenants") {
 				a.view = viewConfigure
 				a.newConfigForm()
@@ -266,14 +277,17 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.moduleLoading = false
 		if msg.err != nil {
 			a.err = msg.err.Error()
+			logger.Error("module fetch failed", "module", a.moduleTitle, "error", msg.err)
 			return a, nil
 		}
 		a.moduleItems = msg.items
+		logger.Info("module data loaded", "module", a.moduleTitle, "count", len(msg.items))
 		return a, nil
 
 	case configDoneMsg:
 		if msg.err != nil {
 			a.err = msg.err.Error()
+			logger.Error("configure failed", "error", msg.err)
 			a.configForm = nil
 			a.view = viewMainMenu
 			return a, nil
@@ -285,6 +299,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.err = ""
 		a.configForm = nil
 		a.view = viewMainMenu
+		logger.Info("configure success", "tenant", msg.cfg.Name, "domain", msg.cfg.Domain)
 		return a, nil
 	}
 
@@ -392,6 +407,8 @@ func (a *App) selectMenu() (tea.Model, tea.Cmd) {
 	a.moduleItems = nil
 	a.err = ""
 
+	logger.Debug("menu select", "item", a.menuItems[a.menuIndex])
+
 	if a.api == nil && a.menuItems[a.menuIndex] != "Configure" && a.menuItems[a.menuIndex] != "Quit" {
 		a.err = "not connected — configure a tenant first"
 		return a, nil
@@ -469,6 +486,8 @@ func (a *App) submitConfig() tea.Cmd {
 	configDir := a.configDir
 
 	return func() tea.Msg {
+		logger.Info("submitting config", "tenant", name, "domain", domain)
+
 		if name == "" || domain == "" || cid == "" || secret == "" {
 			return configDoneMsg{err: fmt.Errorf("all fields are required")}
 		}
@@ -488,6 +507,8 @@ func (a *App) submitConfig() tea.Cmd {
 		if err := cfg.WriteFile(configPath); err != nil {
 			return configDoneMsg{err: fmt.Errorf("write config: %w", err)}
 		}
+
+		logger.Info("config file written", "path", configPath)
 
 		// Authenticate
 		c, err := client.NewClientFromConfig(cfg)

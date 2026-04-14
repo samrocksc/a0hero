@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+
+	"github.com/samrocksc/a0hero/logger"
 )
 
 // ---------------------------------------------------------------------------
@@ -118,22 +120,28 @@ func (c *Client) rawRequest(ctx context.Context, method, path string, body any, 
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		logger.Error("HTTP request failed", "method", method, "path", path, "error", err)
 		return fmt.Errorf("auth transport error: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
+		logger.Error("failed to read response body", "method", method, "path", path, "error", err)
 		return fmt.Errorf("read response body: %w", err)
 	}
+
+	logger.Debug("HTTP response", "method", method, "path", path, "status", resp.StatusCode, "bytes", len(respBody))
 
 	if resp.StatusCode >= 400 {
 		var apiErr APIError
 		if err := json.Unmarshal(respBody, &apiErr); err == nil && apiErr.Code != "" {
 			apiErr.StatusCode = resp.StatusCode
+			logger.Warn("API error", "method", method, "path", path, "status", resp.StatusCode, "code", apiErr.Code, "message", apiErr.Message)
 			return &apiErr
 		}
 		// Fallback if we can't parse error body
+		logger.Warn("API error (unparseable)", "method", method, "path", path, "status", resp.StatusCode, "body", string(respBody))
 		return &APIError{
 			StatusCode: resp.StatusCode,
 			Message:    string(respBody),

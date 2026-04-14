@@ -26,3 +26,6 @@
 # Build output
 /bin/
 /dist/
+
+# Debug logs
+logs/

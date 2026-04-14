@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/samrocksc/a0hero/logger"
 )
 
 // ---------------------------------------------------------------------------
@@ -34,6 +36,7 @@ func NewAuthenticator(domain, clientID, clientSecret, tenant string) (*Authentic
 	if clientSecret == "" {
 		return nil, fmt.Errorf("client secret is required")
 	}
+	logger.Info("authenticator created", "domain", domain, "tenant", tenant)
 	return &Authenticator{
 		domain:       domain,
 		clientID:     clientID,
@@ -66,10 +69,12 @@ func (a *Authenticator) GetToken(ctx context.Context) (string, error) {
 
 	token, expiresAt, err := a.refresh(ctx)
 	if err != nil {
+		logger.Error("token refresh failed", "domain", a.domain, "error", err)
 		return "", err
 	}
 	a.cachedToken = token
 	a.expiresAt = expiresAt
+	logger.Info("token refreshed", "domain", a.domain, "expires_at", expiresAt.Format(time.RFC3339))
 	return token, nil
 }
 
@@ -83,6 +88,8 @@ func (a *Authenticator) refresh(ctx context.Context) (string, time.Time, error) 
 	bodyBytes, _ := json.Marshal(reqBody)
 
 	url := fmt.Sprintf("%s/oauth/token", a.domain)
+	logger.Debug("requesting token", "url", url)
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return "", time.Time{}, err
@@ -91,11 +98,13 @@ func (a *Authenticator) refresh(ctx context.Context) (string, time.Time, error) 
 
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
+		logger.Error("token request network error", "url", url, "error", err)
 		return "", time.Time{}, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		logger.Warn("token request failed", "url", url, "status", resp.StatusCode)
 		var errResp struct {
 			StatusCode int    `json:"statusCode"`
 			Error      string `json:"error"`
