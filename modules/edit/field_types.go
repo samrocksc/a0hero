@@ -63,6 +63,9 @@ type FieldDef struct {
 	// ReadOnly fields cannot be edited (shown as display only)
 	ReadOnly bool
 
+	// Sensitive fields are redacted in the UI (e.g., client_secret)
+	Sensitive bool
+
 	// Options for select fields
 	Options []string
 

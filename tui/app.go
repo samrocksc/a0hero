@@ -362,20 +362,14 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, tea.Batch(cmds...)
 
 	case tea.KeyMsg:
-		// If edit overlay is active, forward keys to it first
+		// If edit overlay is active, forward keys to it
 		if a.editOverlay != nil {
 			updated, cmd := a.editOverlay.Update(msg)
 			a.editOverlay = updated.(*views.EditOverlay)
-			if cmd != nil {
-				cmds = append(cmds, cmd)
-			}
 			return a, cmd
 		}
 		logger.Debug("handleKey", "key", msg.String())
 		a, cmd := a.handleKey(msg)
-		if cmd != nil {
-			
-		}
 		return a, cmd
 
 	case authenticated:
