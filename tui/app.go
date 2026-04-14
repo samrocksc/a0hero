@@ -432,14 +432,22 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		logger.Info("tenantSelectMsg received!", "name", msg.name)
 		// User selected a tenant to switch to
 		logger.Info("switching to tenant", "name", msg.name)
+		
+		// Cancel any in-progress fetch and clear loading state
+		a.cancelFetch()
+		a.loading = true // Show loading while connecting
+		a.err = ""
+		
 		cfg, err := client.Load(filepath.Join(a.configDir, msg.name))
 		if err != nil {
 			a.err = fmt.Sprintf("failed to load tenant: %v", err)
+			a.loading = false
 			return a, tea.Batch(cmds...)
 		}
 		c, err := client.NewClientFromConfig(cfg)
 		if err != nil {
 			a.err = fmt.Sprintf("failed to connect: %v", err)
+			a.loading = false
 			return a, tea.Batch(cmds...)
 		}
 		a.api = c
@@ -565,6 +573,7 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return a, nil
 		case "tab", "right", "l":
 			// Tab out of form = move to next section
+			a.cancelFetch()
 			a.configForm = nil
 			a.configEditing = false
 			a.section = (a.section + 1) % secCount
@@ -613,6 +622,7 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		case "tab", "right", "l":
 			// Tab out of configure menu
+			a.cancelFetch()
 			a.section = (a.section + 1) % secCount
 			a.cursor = 0
 			a.configCursor = 0
