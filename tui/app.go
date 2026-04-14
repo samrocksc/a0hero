@@ -328,6 +328,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, tea.Batch(cmds...)
 
 	case tea.KeyMsg:
+		logger.Debug("handleKey", "key", msg.String())
 		return a.handleKey(msg)
 
 	case authenticated:
@@ -389,16 +390,29 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, a.fetchCurrentSection())
 		return a, tea.Batch(cmds...)
 
-	case views.EditOverlayReady, views.EditOverlayError, views.EditOverlaySaved:
-		// Forward edit overlay messages to the overlay
+	case views.EditOverlayReady:
+		logger.Debug("received EditOverlayReady")
+		// Handle directly in App
 		if a.editOverlay != nil {
-			updated, cmd := a.editOverlay.Update(msg)
-			a.editOverlay = updated.(*views.EditOverlay)
-			if cmd != nil {
-				cmds = append(cmds, cmd)
-			}
+			a.editOverlay.HandleReady(msg.Session)
 		}
-		return a, tea.Batch(cmds...)
+		return a, nil
+
+	case views.EditOverlayError:
+		logger.Debug("received EditOverlayError", "msg", msg.Message)
+		// Handle directly in App
+		if a.editOverlay != nil {
+			a.editOverlay.HandleError(msg.Message)
+		}
+		return a, nil
+
+	case views.EditOverlaySaved:
+		logger.Debug("received EditOverlaySaved")
+		// Handle save completion
+		if a.editOverlay != nil {
+			a.editOverlay.HandleSaved()
+		}
+		return a, nil
 
 	case EditOverlayClosed:
 		// Edit overlay was closed
@@ -406,11 +420,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
-	// If we have an active edit overlay, forward all messages to it
+	// If we have an active edit overlay, forward ALL messages to it
 	if a.editOverlay != nil {
+		logger.Debug("forwarding to editOverlay", "msg_type", fmt.Sprintf("%T", msg))
 		updated, cmd := a.editOverlay.Update(msg)
 		a.editOverlay = updated.(*views.EditOverlay)
 		if cmd != nil {
+			logger.Debug("got cmd from editOverlay")
 			cmds = append(cmds, cmd)
 		}
 		return a, tea.Batch(cmds...)
@@ -880,11 +896,20 @@ func (a *App) fetchLogs(ctx context.Context) tea.Cmd {
 
 // openEditOverlay opens the edit overlay for the currently selected item.
 func (a *App) openEditOverlay() (tea.Model, tea.Cmd) {
+	logger.Debug("openEditOverlay called")
+	
 	if len(a.items) == 0 || a.cursor >= len(a.items) {
+		logger.Debug("openEditOverlay: no items")
+		return a, nil
+	}
+
+	if a.api == nil {
+		logger.Debug("openEditOverlay: no api")
 		return a, nil
 	}
 
 	item := a.items[a.cursor]
+	logger.Debug("openEditOverlay: selected item", "id", item.id)
 
 	homeDir, _ := os.UserHomeDir()
 	historyDir := filepath.Join(homeDir, ".a0hero", "history")
@@ -904,12 +929,15 @@ func (a *App) openEditOverlay() (tea.Model, tea.Cmd) {
 			HistoryDir: historyDir,
 		}
 	default:
+		logger.Debug("openEditOverlay: section not supported")
 		a.err = "editing not supported for this section"
 		return a, nil
 	}
 
+	logger.Debug("creating edit overlay")
 	var cmd tea.Cmd
 	a.editOverlay, cmd = views.NewEditOverlay(cfg)
+	logger.Debug("edit overlay created", "has_cmd", cmd != nil)
 	return a, cmd
 }
 

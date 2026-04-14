@@ -65,6 +65,8 @@ type EditOverlayConfig struct {
 
 // NewEditOverlay creates a new edit overlay.
 func NewEditOverlay(cfg EditOverlayConfig) (*EditOverlay, tea.Cmd) {
+	logger.Debug("NewEditOverlay called", "entityType", cfg.EntityType, "entityID", cfg.EntityID)
+	
 	e := &EditOverlay{
 		entityType: cfg.EntityType,
 		entityID:   cfg.EntityID,
@@ -79,13 +81,46 @@ func NewEditOverlay(cfg EditOverlayConfig) (*EditOverlay, tea.Cmd) {
 
 	// Start fetching current state
 	cmd := e.fetchCurrentState(cfg.HistoryDir)
+	logger.Debug("NewEditOverlay returning", "has_cmd", cmd != nil)
 
 	return e, cmd
 }
 
+// HandleReady handles the EditOverlayReady message from the fetch command.
+func (e *EditOverlay) HandleReady(session *edit.EditSession) {
+	e.session = session
+	e.loading = false
+	// Initialize tag inputs
+	for _, field := range e.fields {
+		if field.Type == edit.FieldTagArray {
+			val := e.getFieldValue(session, field.Key)
+			if arr, ok := val.([]string); ok {
+				e.fieldInputs[field.Key] = components.NewTagInputModel(field.Label, arr)
+			}
+		}
+	}
+}
+
+// HandleError handles the EditOverlayError message.
+func (e *EditOverlay) HandleError(msg string) {
+	e.loading = false
+	e.errors = append(e.errors, msg)
+}
+
+// HandleSaved handles the EditOverlaySaved message.
+func (e *EditOverlay) HandleSaved() {
+	e.loading = false
+	e.successMsg = "Changes saved successfully"
+	e.mode = modeView
+}
+
 // fetchCurrentState fetches the current entity state from the API.
 func (e *EditOverlay) fetchCurrentState(historyDir string) tea.Cmd {
+	logger.Debug("fetchCurrentState starting", "entityID", e.entityID)
+	
 	return func() tea.Msg {
+		logger.Debug("fetchCurrentState func executing")
+		
 		// Create a context with 10 second timeout
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -123,11 +158,13 @@ func (e *EditOverlay) fetchCurrentState(historyDir string) tea.Cmd {
 
 // Init initializes the overlay.
 func (e *EditOverlay) Init() tea.Cmd {
+	logger.Info("EditOverlay Init called")
 	return nil
 }
 
 // Update handles messages.
 func (e *EditOverlay) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	logger.Debug("EditOverlay Update called", "msg_type", fmt.Sprintf("%T", msg))
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {

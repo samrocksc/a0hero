@@ -36,6 +36,10 @@ func NewAuthenticator(domain, clientID, clientSecret, tenant string) (*Authentic
 	if clientSecret == "" {
 		return nil, fmt.Errorf("client secret is required")
 	}
+	// Normalize domain to include https:// if missing
+	if domain[:4] != "http" {
+		domain = "https://" + domain
+	}
 	logger.Info("authenticator created", "domain", domain, "tenant", tenant)
 	return &Authenticator{
 		domain:       domain,
