@@ -106,7 +106,7 @@ var sectionNames = [secCount]string{
 	"Roles",
 	"Connections",
 	"Logs",
-	"Configure",
+	"More",
 }
 
 // Configure sub-menu items
