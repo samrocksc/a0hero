@@ -8,7 +8,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/samjjx/a0hero/client"
+	"github.com/samrocksc/a0hero/client"
+	usermod "github.com/samrocksc/a0hero/modules/users"
+	clientmod "github.com/samrocksc/a0hero/modules/clients"
 )
 
 // ---------------------------------------------------------------------------
@@ -59,7 +61,7 @@ func TestClient_RequestsGoToCorrectBaseURLAndPath(t *testing.T) {
 func TestClient_Auth0Error4xx_ReturnsAPIError(t *testing.T) {
 	mock := NewAuth0MockServer(t)
 
-	mock.RespondWithAuth0Error("/api/v2/clients", http.StatusNotFound, "resource_not_found", "Client not found")
+	mock.RespondWithAuth0Error("/api/v2/clients/non-existent-id", http.StatusNotFound, "resource_not_found", "Client not found")
 
 	c, err := client.NewClient(mock.URL(), "test-client-id", "test-client-secret", "test-tenant")
 	require.NoError(t, err)
@@ -117,40 +119,42 @@ func TestClient_AuthFailure401_PropagatesAsAPIError(t *testing.T) {
 		})
 	})
 
-	c, err := client.NewClient(mock.URL(), "bad-id", "bad-secret", "test-tenant")
-	require.NoError(t, err)
-
-	// Any API call should fail because token acquisition fails
-	err = c.Get(context.Background(), "/api/v2/users", nil)
-	require.Error(t, err)
+	// NewClient fails because token validation happens during construction
+	_, err := client.NewClient(mock.URL(), "bad-id", "bad-secret", "test-tenant")
+	require.Error(t, err, "NewClient should fail when token endpoint returns 401")
 
 	apiErr, ok := err.(*client.APIError)
-	require.True(t, ok, "auth failure should propagate as *client.APIError")
+	require.True(t, ok, "auth failure should be *client.APIError, got %T: %v", err, err)
 	require.Equal(t, 401, apiErr.StatusCode)
+	require.Equal(t, "unauthorized", apiErr.Code)
 }
 
-func TestClient_ModuleSubclientInjectsAuth(t *testing.T) {
+func TestClient_ModuleClientsUseSharedAuth(t *testing.T) {
 	mock := NewAuth0MockServer(t)
 
 	// Register handlers for multiple module endpoints
 	var usersCalled, clientsCalled bool
 	mock.Handle("/api/v2/users", func(w http.ResponseWriter, r *http.Request) {
 		usersCalled = true
-		mock.RespondWithJSON("/api/v2/users", http.StatusOK, map[string]any{"users": []any{}})
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`[]`))
 	})
 	mock.Handle("/api/v2/clients", func(w http.ResponseWriter, r *http.Request) {
 		clientsCalled = true
-		mock.RespondWithJSON("/api/v2/clients", http.StatusOK, map[string]any{"clients": []any{}})
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`[]`))
 	})
 
 	c, err := client.NewClient(mock.URL(), "test-client-id", "test-client-secret", "test-tenant")
 	require.NoError(t, err)
 
-	// Use module sub-clients (they all share the same authenticated http.Client)
-	users := client.NewUsersClient(c)
-	clients := client.NewClientsClient(c)
+	// Use module clients (they all share the same authenticated http.Client)
+	users := usermod.New(c)
+	clients := clientmod.New(c)
 
-	_, err = users.List(context.Background())
+	_, err = users.List(context.Background(), 0, 25)
 	require.NoError(t, err)
 	_, err = clients.List(context.Background())
 	require.NoError(t, err)

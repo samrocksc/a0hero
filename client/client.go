@@ -18,15 +18,15 @@ import (
 // typed methods for Auth0 Management API resources.
 type Client struct {
 	httpClient *http.Client
-	baseURL   string
-	auth      *Authenticator
-	tenant    string
+	baseURL    string
+	auth       *Authenticator
+	tenant     string
 }
 
 // authTransport injects the Bearer token on every request.
 type authTransport struct {
-	auth   *Authenticator
-	inner  http.RoundTripper
+	auth  *Authenticator
+	inner http.RoundTripper
 }
 
 // RoundTrip implements http.RoundTripper — fetches token and injects Authorization.
@@ -73,6 +73,18 @@ func NewClient(baseURL, clientID, clientSecret, tenant string) (*Client, error) 
 	return c, nil
 }
 
+// NewClientFromConfig creates a Client from a loaded Config.
+func NewClientFromConfig(cfg *Config) (*Client, error) {
+	if cfg.Domain == "" {
+		return nil, fmt.Errorf("domain is required in config")
+	}
+	baseURL := cfg.Domain
+	if baseURL[:4] != "http" {
+		baseURL = "https://" + baseURL
+	}
+	return NewClient(baseURL, cfg.ClientID, cfg.ClientSecret, cfg.Name)
+}
+
 // Tenant returns the configured tenant name.
 func (c *Client) Tenant() string {
 	return c.tenant
@@ -117,7 +129,7 @@ func (c *Client) rawRequest(ctx context.Context, method, path string, body any, 
 
 	if resp.StatusCode >= 400 {
 		var apiErr APIError
-		if err := json.Unmarshal(respBody, &apiErr); err == nil {
+		if err := json.Unmarshal(respBody, &apiErr); err == nil && apiErr.Code != "" {
 			apiErr.StatusCode = resp.StatusCode
 			return &apiErr
 		}
@@ -125,7 +137,7 @@ func (c *Client) rawRequest(ctx context.Context, method, path string, body any, 
 		return &APIError{
 			StatusCode: resp.StatusCode,
 			Message:    string(respBody),
-			Code:      "unknown",
+			Code:       "unknown",
 		}
 	}
 
@@ -143,6 +155,15 @@ func (c *Client) Get(ctx context.Context, path string, result any) error {
 	return c.rawRequest(ctx, http.MethodGet, path, nil, result)
 }
 
+// GetWithQuery issues a GET request with query parameters appended to the path.
+func (c *Client) GetWithQuery(ctx context.Context, path string, query string, result any) error {
+	fullPath := path
+	if query != "" {
+		fullPath = path + "?" + query
+	}
+	return c.rawRequest(ctx, http.MethodGet, fullPath, nil, result)
+}
+
 // Post issues a POST request with the given body.
 func (c *Client) Post(ctx context.Context, path string, body, result any) error {
 	return c.rawRequest(ctx, http.MethodPost, path, body, result)
@@ -156,76 +177,4 @@ func (c *Client) Patch(ctx context.Context, path string, body, result any) error
 // Delete issues a DELETE request to the given path.
 func (c *Client) Delete(ctx context.Context, path string) error {
 	return c.rawRequest(ctx, http.MethodDelete, path, nil, nil)
-}
-
-// ---------------------------------------------------------------------------
-// Module sub-clients
-// ---------------------------------------------------------------------------
-
-// NewUsersClient returns a UsersClient backed by c.
-func NewUsersClient(c *Client) *UsersClient {
-	return &UsersClient{c: c}
-}
-
-// UsersClient wraps the Auth0 /api/v2/users endpoints.
-type UsersClient struct {
-	c *Client
-}
-
-// List returns the first page of users.
-func (c *UsersClient) List(ctx context.Context) (any, error) {
-	var result struct {
-		Users []map[string]any `json:"users"`
-	}
-	err := c.c.Get(ctx, "/api/v2/users", &result)
-	return result.Users, err
-}
-
-// NewClientsClient returns a ClientsClient backed by c.
-func NewClientsClient(c *Client) *ClientsClient {
-	return &ClientsClient{c: c}
-}
-
-// ClientsClient wraps the Auth0 /api/v2/clients endpoints.
-type ClientsClient struct {
-	c *Client
-}
-
-// List returns the first page of clients.
-func (c *ClientsClient) List(ctx context.Context) (any, error) {
-	var result struct {
-		Clients []map[string]any `json:"clients"`
-	}
-	err := c.c.Get(ctx, "/api/v2/clients", &result)
-	return result.Clients, err
-}
-
-// NewRolesClient returns a RolesClient backed by c.
-func NewRolesClient(c *Client) *RolesClient {
-	return &RolesClient{c: c}
-}
-
-// RolesClient wraps the Auth0 /api/v2/roles endpoints.
-type RolesClient struct {
-	c *Client
-}
-
-// NewConnectionsClient returns a ConnectionsClient backed by c.
-func NewConnectionsClient(c *Client) *ConnectionsClient {
-	return &ConnectionsClient{c: c}
-}
-
-// ConnectionsClient wraps the Auth0 /api/v2/connections endpoints.
-type ConnectionsClient struct {
-	c *Client
-}
-
-// NewLogsClient returns a LogsClient backed by c.
-func NewLogsClient(c *Client) *LogsClient {
-	return &LogsClient{c: c}
-}
-
-// LogsClient wraps the Auth0 /api/v2/logs endpoints.
-type LogsClient struct {
-	c *Client
 }

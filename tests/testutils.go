@@ -28,7 +28,7 @@ type Auth0MockServer struct {
 	requests    []RecordedRequest
 	token       string
 	tokenExpiry time.Time
-	tokenReqs   int // count of token requests received
+	tokenReqs   int                         // count of token requests received
 	handlers    map[string]http.HandlerFunc // custom handlers per path
 }
 

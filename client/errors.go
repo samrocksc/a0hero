@@ -5,9 +5,9 @@ import "fmt"
 
 // APIError wraps an Auth0 API error response.
 type APIError struct {
-	StatusCode int
-	Message    string
-	Code       string
+	StatusCode int    `json:"statusCode"`
+	Message    string `json:"message"`
+	Code       string `json:"error"`
 }
 
 func (e *APIError) Error() string {

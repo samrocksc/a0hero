@@ -12,10 +12,10 @@ import (
 
 // Config holds the configuration for an Auth0 tenant.
 type Config struct {
-	Name         string
-	Domain       string
-	ClientID     string
-	ClientSecret string
+	Name         string `yaml:"name"`
+	Domain       string `yaml:"domain"`
+	ClientID     string `yaml:"client_id"`
+	ClientSecret string `yaml:"client_secret"`
 }
 
 // Load reads a tenant config file from config/<name>.yaml.

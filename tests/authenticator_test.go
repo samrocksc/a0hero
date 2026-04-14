@@ -2,6 +2,7 @@ package tests
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"sync"
 	"testing"
@@ -9,7 +10,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/samjjx/a0hero/client"
+	"github.com/samrocksc/a0hero/client"
 )
 
 // ---------------------------------------------------------------------------
@@ -115,10 +116,15 @@ func TestAuthenticator_ConcurrentTokenFetchNoDoubleRefresh(t *testing.T) {
 func TestAuthenticator_AuthFailure401(t *testing.T) {
 	mock := NewAuth0MockServer(t)
 
-	// Configure token endpoint to return 401
+	// Configure token endpoint to return 401 with proper Auth0 error body
 	mock.Handle("/oauth/token", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]any{
+			"statusCode": 401,
+			"error":      "unauthorized",
+			"message":    "Invalid client credentials",
+		})
 	})
 
 	auth, err := client.NewAuthenticator(mock.URL(), "bad-client-id", "bad-client-secret", "test-tenant")

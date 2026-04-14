@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/samjjx/a0hero/client"
+	"github.com/samrocksc/a0hero/client"
 )
 
 // ---------------------------------------------------------------------------

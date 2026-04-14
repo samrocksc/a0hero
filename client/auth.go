@@ -19,14 +19,14 @@ import (
 // and caches tokens with automatic refresh near expiry.
 type Authenticator struct {
 	domain       string
-	clientID    string
+	clientID     string
 	clientSecret string
-	tenant      string
-	httpClient  *http.Client
+	tenant       string
+	httpClient   *http.Client
 
-	mu         sync.RWMutex
+	mu          sync.RWMutex
 	cachedToken string
-	expiresAt  time.Time
+	expiresAt   time.Time
 }
 
 // NewAuthenticator creates a new Authenticator for the given credentials.
@@ -36,10 +36,10 @@ func NewAuthenticator(domain, clientID, clientSecret, tenant string) (*Authentic
 	}
 	return &Authenticator{
 		domain:       domain,
-		clientID:    clientID,
+		clientID:     clientID,
 		clientSecret: clientSecret,
-		tenant:      tenant,
-		httpClient:  &http.Client{Timeout: 10 * time.Second},
+		tenant:       tenant,
+		httpClient:   &http.Client{Timeout: 10 * time.Second},
 	}, nil
 }
 
@@ -98,8 +98,8 @@ func (a *Authenticator) refresh(ctx context.Context) (string, time.Time, error) 
 	if resp.StatusCode != http.StatusOK {
 		var errResp struct {
 			StatusCode int    `json:"statusCode"`
-			Error     string `json:"error"`
-			Message   string `json:"message"`
+			Error      string `json:"error"`
+			Message    string `json:"message"`
 		}
 		if decodeErr := json.NewDecoder(resp.Body).Decode(&errResp); decodeErr == nil {
 			return "", time.Time{}, &APIError{
@@ -118,8 +118,8 @@ func (a *Authenticator) refresh(ctx context.Context) (string, time.Time, error) 
 
 	var tokenResp struct {
 		AccessToken string `json:"access_token"`
-		ExpiresIn  int    `json:"expires_in"`
-		TokenType  string `json:"token_type"`
+		ExpiresIn   int    `json:"expires_in"`
+		TokenType   string `json:"token_type"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
 		return "", time.Time{}, fmt.Errorf("decode token response: %w", err)
