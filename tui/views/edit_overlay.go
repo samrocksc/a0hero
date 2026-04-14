@@ -81,7 +81,7 @@ func NewEditOverlay(cfg EditOverlayConfig) (*EditOverlay, tea.Cmd) {
 
 	// Start fetching current state
 	cmd := e.fetchCurrentState(cfg.HistoryDir)
-	logger.Debug("NewEditOverlay returning", "has_cmd", cmd != nil)
+
 
 	return e, cmd
 }
@@ -114,6 +114,17 @@ func (e *EditOverlay) HandleSaved() {
 	e.mode = modeView
 }
 
+// SetDimensions sets the overlay dimensions.
+func (e *EditOverlay) SetDimensions(width, height int) {
+	e.width = width
+	// Reserve 4 lines for tab bar, info bar, divider, and help bar
+	if height > 6 {
+		e.height = height - 4
+	} else {
+		e.height = height
+	}
+}
+
 // Loading returns whether the overlay is still loading.
 func (e *EditOverlay) Loading() bool {
 	return e.loading
@@ -134,8 +145,7 @@ func (e *EditOverlay) fetchCurrentState(historyDir string) tea.Cmd {
 	logger.Info("fetching entity for edit", "type", e.entityType, "id", e.entityID)
 	
 	return func() tea.Msg {
-		logger.Debug("fetchCurrentState func executing")
-		
+			
 		// Create a context with 10 second timeout
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -179,7 +189,7 @@ func (e *EditOverlay) Init() tea.Cmd {
 
 // Update handles messages.
 func (e *EditOverlay) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	logger.Debug("EditOverlay Update called", "msg_type", fmt.Sprintf("%T", msg))
+
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
