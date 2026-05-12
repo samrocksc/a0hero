@@ -18,12 +18,14 @@ import (
 	"github.com/samrocksc/a0hero/client"
 	clientmod "github.com/samrocksc/a0hero/modules/clients"
 	connmod "github.com/samrocksc/a0hero/modules/connections"
+	"github.com/samrocksc/a0hero/modules/edit"
 	logmod "github.com/samrocksc/a0hero/modules/logs"
 	rolemod "github.com/samrocksc/a0hero/modules/roles"
 	usermod "github.com/samrocksc/a0hero/modules/users"
 
 	"github.com/samrocksc/a0hero/logger"
 	"github.com/samrocksc/a0hero/tui/components"
+	"github.com/samrocksc/a0hero/tui/state"
 	"github.com/samrocksc/a0hero/tui/views"
 )
 
@@ -107,6 +109,26 @@ var sectionNames = [secCount]string{
 	"Connections",
 	"Logs",
 	"More",
+}
+
+// toStateSection converts internal section to state.Section
+func (s section) toStateSection() state.Section {
+	switch s {
+	case secUsers:
+		return state.SecUsers
+	case secClients:
+		return state.SecClients
+	case secRoles:
+		return state.SecRoles
+	case secConnections:
+		return state.SecConnections
+	case secLogs:
+		return state.SecLogs
+	case secConfigure:
+		return state.SecConfigure
+	default:
+		return state.SecUsers
+	}
 }
 
 // Configure sub-menu items
@@ -195,7 +217,7 @@ type App struct {
 	detailContent string
 
 	// Edit overlay (for inline editing)
-	editOverlay   *views.EditOverlay
+	editOverlay   *views.SimpleEditOverlay
 
 	// Configure sub-menu
 	configCursor    configItem
@@ -229,6 +251,9 @@ type App struct {
 
 	// Debug
 	debug bool
+
+	// State manager (Phase 2 - event-driven architecture)
+	stateManager *state.StateManager
 }
 
 // NewApp creates a new App model.
@@ -246,6 +271,7 @@ func NewApp(configDir string, debug bool) *App {
 		fetchTimeout:  10 * time.Second,
 		cache:         make(map[section]*cacheEntry),
 		cacheTTL:      30 * time.Second,
+		stateManager:  state.NewStateManager(nil), // Initialize in Init after auth
 	}
 }
 
@@ -364,8 +390,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		// If edit overlay is active, forward keys to it
 		if a.editOverlay != nil {
-			updated, cmd := a.editOverlay.Update(msg)
-			a.editOverlay = updated.(*views.EditOverlay)
+			_, cmd := a.editOverlay.Update(msg)
 			return a, cmd
 		}
 		logger.Debug("handleKey", "key", msg.String())
@@ -383,7 +408,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			a.connected = false
 			a.section = secConfigure
-			a.configForm = nil; a.buildConfigMenu()
+			a.configForm = nil
+			a.buildConfigMenu()
 			return a, tea.Batch(cmds...)
 		}
 		a.api = msg.client
@@ -391,6 +417,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.domain = msg.cfg.Domain
 		a.connected = true
 		a.err = ""
+		
+		// Initialize state manager services for all sections
+		a.initStateManagerServices()
+		
 		cmds = append(cmds, a.fetchCurrentSection())
 		return a, tea.Batch(cmds...)
 
@@ -486,26 +516,69 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 
-	case views.EditOverlaySaved:
-		logger.Debug("received EditOverlaySaved")
-		// Handle save completion
-		if a.editOverlay != nil {
-			a.editOverlay.HandleSaved()
+	case views.EditSubmitMsg:
+		// User confirmed save in edit overlay - process through state machine
+		logger.Info("edit submit requested", "section", msg.Section, "entityID", msg.EntityID, "changesCount", len(msg.Changes))
+		
+		// IMPORTANT: Send field changes FIRST so session is updated before submit
+		for field, value := range msg.Changes {
+			logger.Debug("sending EventFieldChange", "field", field, "value", value)
+			a.stateManager.ProcessEvent(state.EventFieldChange{
+				Section: msg.Section,
+				Field:   field,
+				Value:   value,
+			})
 		}
-		return a, nil
+		
+		// Now submit with updated session
+		cmd := a.stateManager.ProcessEvent(state.EventSubmit{
+			Section:  msg.Section,
+			EntityID: msg.EntityID,
+		})
+		logger.Debug("EventSubmit processed", "cmdNil", cmd == nil)
+		return a, cmd
+
+	case views.EditCancelMsg:
+		// User cancelled edit - cancel through state machine
+		logger.Info("edit cancel requested", "section", msg.Section, "entityID", msg.EntityID)
+		return a, a.stateManager.ProcessEvent(state.EventCancelEdit{
+			Section:  msg.Section,
+			EntityID: msg.EntityID,
+		})
 
 	case EditOverlayClosed:
 		logger.Info("edit overlay closed")
 		// Edit overlay was closed
 		a.editOverlay = nil
 		return a, nil
+
+	case state.EventAPICallComplete:
+		logger.Info("save completed", "section", msg.Section, "entityID", msg.EntityID, "success", msg.Err == nil, "error", msg.Err)
+		if msg.Err != nil {
+			// Error during save - show error in overlay
+			if a.editOverlay != nil {
+				a.editOverlay.HandleError(fmt.Sprintf("Save failed: %v", msg.Err))
+			}
+			logger.Error("save failed", "section", msg.Section, "entityID", msg.EntityID, "error", msg.Err)
+		} else {
+			// Success - close overlay and refresh data
+			logger.Info("save succeeded", "section", msg.Section, "entityID", msg.EntityID)
+			a.editOverlay = nil
+			// Refresh the current section to show updated data
+			return a, tea.Batch(cmds...)
+		}
+		return a, nil
+
+	case state.EventStartEdit:
+		// Data is now loaded in the edit overlay, just need to re-render
+		logger.Debug("edit overlay data loaded", "entity", msg.EntityType, "id", msg.EntityID)
+		return a, nil
 	}
 
 	// If we have an active edit overlay, forward ALL messages to it
 	if a.editOverlay != nil {
 
-		updated, cmd := a.editOverlay.Update(msg)
-		a.editOverlay = updated.(*views.EditOverlay)
+		_, cmd := a.editOverlay.Update(msg)
 		if cmd != nil {
 
 			cmds = append(cmds, cmd)
@@ -577,8 +650,8 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.configForm = nil
 			a.configEditing = false
 			return a, nil
-		case "tab", "right", "l":
-			// Tab out of form = move to next section
+		case "right", "l":
+			// Arrow out of form = move to next section
 			a.cancelFetch()
 			a.configForm = nil
 			a.configEditing = false
@@ -592,8 +665,8 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, a.fetchCurrentSection())
 			}
 			return a, tea.Batch(cmds...)
-		case "shift+tab", "left", "h":
-			// Shift+tab out of form = move to previous section
+		case "left", "h":
+			// Arrow out of form = move to previous section
 			a.configForm = nil
 			a.configEditing = false
 			a.section = (a.section - 1 + secCount) % secCount
@@ -607,6 +680,7 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return a, tea.Batch(cmds...)
 		default:
+			// Tab, Shift+Tab, and all other keys go to the form for normal navigation
 			_, cmd := a.configForm.Update(msg)
 			if a.configForm.State == huh.StateCompleted {
 				cmds = append(cmds, a.submitConfig())
@@ -736,11 +810,15 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "down", "j":
 		if a.items != nil && a.cursor < len(a.items)-1 {
 			a.cursor++
+			a.refreshTableContent()
 		}
+		return a, nil
 	case "up", "k":
 		if a.cursor > 0 {
 			a.cursor--
+			a.refreshTableContent()
 		}
+		return a, nil
 
 	case "e":
 		// Open edit overlay for selected item
@@ -1039,19 +1117,42 @@ func (a *App) openEditOverlay() (tea.Model, tea.Cmd) {
 	homeDir, _ := os.UserHomeDir()
 	historyDir := filepath.Join(homeDir, ".a0hero", "history")
 
-	// Determine entity type and create service based on current section
-	var cfg views.EditOverlayConfig
+	// Determine entity type and fetch current data
+	var entityType string
+	var fields []edit.FieldDef
+	var fetchFunc func(context.Context, string) (map[string]interface{}, error)
 
 	switch a.section {
 	case secClients:
+		entityType = "client"
+		fields = clientmod.ClientFields
 		clientSvc := clientmod.New(a.api)
-		cfg = views.EditOverlayConfig{
-			EntityType: "client",
-			EntityID:   item.id,
-			Fields:     clientmod.ClientFields,
-			Service:    clientSvc,
-			OnClose:    func() tea.Msg { return EditOverlayClosed{} },
-			HistoryDir: historyDir,
+		fetchFunc = func(ctx context.Context, id string) (map[string]interface{}, error) {
+			c, err := clientSvc.Get(ctx, id)
+			if err != nil {
+				return nil, err
+			}
+			// Convert to map
+			return map[string]interface{}{
+				"client_id":                  c.ClientID,
+				"name":                       c.Name,
+				"app_type":                   c.AppType,
+				"description":                c.Description,
+				"callbacks":                  c.Callbacks,
+				"redirect_uris":              c.RedirectURIs,
+				"web_origins":                c.WebOrigins,
+				"allowed_origins":            c.AllowedOrigins,
+				"logo_uri":                   c.LogoURI,
+				"grant_types":                c.GrantTypes,
+				"is_first_party":             c.IsFirstParty,
+				"is_global":                  c.IsGlobal,
+				"login_uri":                  c.LoginURI,
+				"login_origin":               c.LoginOrigin,
+				"logout_urls":                c.LogoutURLs,
+				"custom_login_page_preview":  c.CustomLoginPagePreview,
+				"allowed_clients":            c.AllowedClients,
+				"mobile":                     c.Mobile,
+			}, nil
 		}
 	default:
 		logger.Debug("openEditOverlay: section not supported")
@@ -1059,12 +1160,51 @@ func (a *App) openEditOverlay() (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
-	logger.Debug("creating edit overlay")
-	var cmd tea.Cmd
-	a.editOverlay, cmd = views.NewEditOverlay(cfg)
-	a.editOverlay.SetDimensions(a.width, a.height)
-	logger.Debug("edit overlay created", "has_cmd", cmd != nil)
-	return a, cmd
+	// Fetch the data asynchronously
+	return a, func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		initialState, err := fetchFunc(ctx, item.id)
+		if err != nil {
+			logger.Error("failed to fetch entity for edit", "type", entityType, "id", item.id, "error", err)
+			return state.EventError{
+				Section: a.section.toStateSection(),
+				Err:     fmt.Errorf("failed to load %s: %w", entityType, err),
+			}
+		}
+
+		// Create overlay with data already loaded
+		cfg := views.SimpleEditOverlayConfig{
+			EntityType: entityType,
+			EntityID:   item.id,
+			Fields:     fields,
+			OnClose:    func() tea.Msg { return EditOverlayClosed{} },
+			Section:    int(a.section.toStateSection()),
+			EmitEvent:  a.emitEvent,
+			HistoryDir: historyDir,
+		}
+
+		a.editOverlay, _ = views.NewSimpleEditOverlay(cfg)
+		a.editOverlay.SetDimensions(a.width, a.height)
+
+		// Populate the overlay with fetched data
+		a.editOverlay.HandleReady(&edit.EditSession{
+			EntityType: entityType,
+			EntityID:   item.id,
+			Fields:     fields,
+			Current:    initialState,
+			Original:   initialState,
+		})
+
+		// Notify state machine that edit has started
+		return state.EventStartEdit{
+			Section:      a.section.toStateSection(),
+			EntityID:     item.id,
+			EntityType:   entityType,
+			InitialState: initialState,
+		}
+	}
 }
 
 // Message for edit overlay closed
@@ -1416,7 +1556,7 @@ func (a *App) renderHelp() string {
 	}
 	if a.section == secConfigure {
 		if a.configForm != nil {
-			return helpStyle.Render(" esc back to menu  •  tab/h← switch section  •  enter submit")
+			return helpStyle.Render(" esc back to menu  •  ←/→ switch section  •  enter submit")
 		}
 		return helpStyle.Render(" tab/h← switch section  •  ↑↓ choose  •  enter select  •  q quit")
 	}
@@ -1436,4 +1576,96 @@ func (fmtHelper) dimCount(cursor, total int) string {
 		return ""
 	}
 	return fmt.Sprintf("(%d/%d)", cursor+1, total)
+}
+
+// emitEvent wraps events and routes them to the state machine.
+// Supports both proper SectionEvents and legacy map[string]interface{} from edit overlay.
+func (a *App) emitEvent(evt interface{}) tea.Msg {
+	// If it's already a SectionEvent, process directly
+	if se, ok := evt.(state.SectionEvent); ok {
+		cmd := a.stateManager.ProcessEvent(se)
+		return cmd
+	}
+	
+	// Handle map[string]interface{} from edit overlay (legacy compatibility)
+	if m, ok := evt.(map[string]interface{}); ok {
+		section := state.Section(m["section"].(int))
+		eventType, _ := m["type"].(string)
+		
+		switch eventType {
+		case "EventSubmit":
+			entityID, _ := m["entityID"].(string)
+			changes, _ := m["changes"].(map[string]interface{})
+			cmd := a.stateManager.ProcessEvent(state.EventSubmit{
+				Section:  section,
+				EntityID: entityID,
+			})
+			
+			// The ProcessEvent returns a command that will execute the API call
+			// via the service adapter and return EventAPICallComplete
+			logger.Info("EventSubmit received", "section", section, "entityID", entityID, "changes", changes)
+			return cmd
+		case "EventCancel":
+			// Cancel the pending save
+			entityID, _ := m["entityID"].(string)
+			logger.Info("EventCancel received", "section", section, "entityID", entityID)
+			cmd := a.stateManager.ProcessEvent(state.EventCancelEdit{
+				Section: section,
+				EntityID: entityID,
+			})
+			return cmd
+		case "EventFieldChange":
+			field, _ := m["field"].(string)
+			value := m["value"]
+			cmd := a.stateManager.ProcessEvent(state.EventFieldChange{
+				Section: section,
+				Field:   field,
+				Value:   value,
+			})
+			return cmd
+		}
+	}
+	
+	return evt
+}
+
+// initStateManagerServices initializes the EntityService for each section in the state manager.
+func (a *App) initStateManagerServices() {
+	if a.api == nil {
+		return
+	}
+	
+	clientModuleClient := clientmod.New(a.api)
+	a.stateManager.UpdateService(state.SecClients, &clientServiceAdapter{moduleClient: clientModuleClient})
+	
+	logger.Info("state manager services initialized")
+}
+
+// clientServiceAdapter wraps clients.Auth0Client to implement state.EntityService
+type clientServiceAdapter struct {
+	moduleClient *clientmod.Auth0Client
+}
+
+func (c *clientServiceAdapter) EntityType() string { return "client" }
+func (c *clientServiceAdapter) GetFields() []interface{} {
+	fields := clientmod.ClientFields
+	result := make([]interface{}, len(fields))
+	for i, f := range fields {
+		result[i] = f
+	}
+	return result
+}
+
+func (c *clientServiceAdapter) Fetch(ctx context.Context, id string) (map[string]interface{}, error) {
+	if c.moduleClient == nil {
+		return nil, fmt.Errorf("client module not initialized")
+	}
+	return c.moduleClient.Fetch(ctx, id)
+}
+
+func (c *clientServiceAdapter) Update(ctx context.Context, id string, changes map[string]interface{}) (map[string]interface{}, error) {
+	if c.moduleClient == nil {
+		return nil, fmt.Errorf("client module not initialized")
+	}
+	return c.moduleClient.Update(ctx, id, changes)
 }

@@ -89,6 +89,21 @@ func NewClientFromConfig(cfg *Config) (*Client, error) {
 	return NewClient(baseURL, cfg.ClientID, cfg.ClientSecret, cfg.Name)
 }
 
+// NewTestClient creates a test client with a custom HTTP client.
+// This bypasses authentication and allows injection of mock servers.
+// Use only in tests.
+func NewTestClient(baseURL string, httpClient *http.Client, tenant string) *Client {
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 30 * time.Second}
+	}
+	return &Client{
+		httpClient: httpClient,
+		baseURL:    baseURL,
+		tenant:     tenant,
+		auth:       nil, // No auth in test mode
+	}
+}
+
 // Tenant returns the configured tenant name.
 func (c *Client) Tenant() string {
 	return c.tenant

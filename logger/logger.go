@@ -1,8 +1,6 @@
 // Package logger provides a structured debug logger for a0hero.
 // When debug mode is enabled (via --debug flag), all operations write
-// JSON lines to logs/ in the format specified by AGENTS.md:
-//
-//	{ts, level, tenant, module, action, target, status, error}
+// JSON lines to logs/ in a readable format with key-value pairs.
 //
 // When debug mode is off, logging is silent.
 package logger
@@ -10,27 +8,27 @@ package logger
 import (
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/charmbracelet/log"
 )
 
 // L is the global logger. Nil when debug mode is off.
-var L *slog.Logger
+var L *log.Logger
 var mu sync.Mutex
 var logDir string
-var logFile *os.File
 
 // Setup initializes the debug logger. If debug is false, all log calls are no-ops.
-// Logs are written to logDir/<date>.log as JSON lines.
+// Logs are written to logDir/<date>.log as formatted lines.
 func Setup(debug bool, dir string) error {
 	mu.Lock()
 	defer mu.Unlock()
 
 	if !debug {
-		L = slog.New(slog.NewTextHandler(io.Discard, nil))
+		L = log.New(io.Discard)
 		return nil
 	}
 
@@ -52,10 +50,15 @@ func Setup(debug bool, dir string) error {
 		return fmt.Errorf("open log file %s: %w", path, err)
 	}
 
-	logFile = f
-	L = slog.New(slog.NewJSONHandler(f, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
-	}))
+	// Create charmbracelet/log logger with pretty formatting
+	L = log.New(f)
+	L.SetReportTimestamp(true)
+	L.SetReportCaller(false)
+	L.SetTimeFormat("2006-01-02 15:04:05")
+	
+	// Use pretty printer for development (easier to read than JSON)
+	// For JSON output, use: L.SetFormatter(log.JSONFormatter)
+	L.SetLevel(log.DebugLevel)
 
 	L.Info("logger initialized", "log_dir", logDir, "log_file", path)
 	return nil
@@ -65,10 +68,8 @@ func Setup(debug bool, dir string) error {
 func Close() {
 	mu.Lock()
 	defer mu.Unlock()
-	if logFile != nil {
+	if L != nil {
 		L.Info("logger shutting down")
-		logFile.Close()
-		logFile = nil
 	}
 }
 
@@ -76,10 +77,7 @@ func Close() {
 func LogPath() string {
 	mu.Lock()
 	defer mu.Unlock()
-	if logFile == nil {
-		return ""
-	}
-	return logFile.Name()
+	return logDir
 }
 
 // Convenience functions that are no-ops when debug mode is off.
@@ -110,9 +108,9 @@ func Error(msg string, args ...any) {
 
 // With returns a logger pre-loaded with key-value pairs.
 // Useful for adding tenant/module context.
-func With(args ...any) *slog.Logger {
+func With(args ...any) *log.Logger {
 	if L == nil {
-		return slog.New(slog.NewTextHandler(io.Discard, nil))
+		return log.New(os.Stderr)
 	}
 	return L.With(args...)
 }

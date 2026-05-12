@@ -1,15 +1,12 @@
 package views
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-
-	"github.com/samrocksc/a0hero/logger"
 	"github.com/samrocksc/a0hero/modules/edit"
 )
 
@@ -19,7 +16,10 @@ type EditOverlay struct {
 	entityID   string
 	fields     []edit.FieldDef
 	session    *edit.EditSession
-	service    edit.EntityService
+
+	// Phase 2: Event-driven state machine support
+	section   int // state.Section enum value
+	emitEvent func(evt interface{}) tea.Msg
 
 	// UI state
 	fieldInputs   map[string]string   // current values for text/scalar fields
@@ -30,6 +30,9 @@ type EditOverlay struct {
 	successMsg    string
 	loading       bool
 	dirty         bool
+	
+	// Save timeout tracking
+	savingStartTime time.Time
 
 	// Field editing sub-state (when typing a value)
 	editing       bool   // true when actively typing into a field
@@ -43,7 +46,6 @@ type EditOverlay struct {
 
 	// Callbacks
 	onClose    func() tea.Msg
-	onSave     func(map[string]interface{}) tea.Msg
 	historyDir string
 }
 
@@ -65,8 +67,10 @@ type EditOverlayError struct {
 	Message string
 }
 
-type EditOverlaySaved struct {
-	Data map[string]interface{}
+type EditOverlaySaveResult struct {
+	Success bool
+	Data    map[string]interface{}
+	Error   error
 }
 
 // NewEditOverlay creates a new edit overlay.
@@ -75,14 +79,14 @@ func NewEditOverlay(cfg EditOverlayConfig) (*EditOverlay, tea.Cmd) {
 		entityType: cfg.EntityType,
 		entityID:   cfg.EntityID,
 		fields:     cfg.Fields,
-		service:    cfg.Service,
 		onClose:    cfg.OnClose,
-		onSave:     cfg.OnSave,
+		section:    cfg.Section,
+		emitEvent:  cfg.EmitEvent,
 		historyDir: cfg.HistoryDir,
 		mode:       modeView,
 		loading:    true,
 	}
-	return e, e.fetchCurrentState(cfg.HistoryDir)
+	return e, nil
 }
 
 // SetDimensions sets the overlay dimensions.
@@ -159,9 +163,6 @@ func (e *EditOverlay) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case EditOverlayError:
 		e.HandleError(msg.Message)
 		return e, nil
-	case EditOverlaySaved:
-		e.HandleSaved()
-		return e, nil
 	case tea.KeyMsg:
 		return e.handleKey(msg)
 	}
@@ -181,7 +182,24 @@ func (e *EditOverlay) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case modeEdit:
 		return e.handleEditKey(msg)
 	case modeSaving:
-		return e, nil
+		// While saving, allow Esc to cancel and trigger timeout check
+		switch msg.String() {
+		case "esc":
+			// Emit cancel event with entityID
+			if e.emitEvent != nil {
+				return e, func() tea.Msg {
+					return e.emitEvent(map[string]interface{}{
+						"type":     "EventCancel",
+						"section":  e.section,
+						"entityID": e.entityID,
+					})
+				}
+			}
+			return e, nil
+		default:
+			// Ignore other keys while saving
+			return e, nil
+		}
 	}
 	return e, nil
 }
@@ -369,10 +387,14 @@ func (e *EditOverlay) getFieldDef(key string) *edit.FieldDef {
 	return nil
 }
 
-// submit saves the changes.
+// OnSave requests a save with the given changes.
+// Returns a command that produces an event for the state machine to handle.
 func (e *EditOverlay) submit() tea.Cmd {
 	e.mode = modeSaving
+	e.savingStartTime = time.Now()
+	e.successMsg = ""  // Clear any previous success message
 	e.errors = nil
+
 	changes := make(map[string]interface{})
 	for _, field := range e.fields {
 		if field.ReadOnly {
@@ -389,31 +411,43 @@ func (e *EditOverlay) submit() tea.Cmd {
 			}
 		}
 	}
-	if e.onSave != nil {
-		return func() tea.Msg { return e.onSave(changes) }
+
+	// Phase 2: Emit event for state machine instead of direct callback
+	if e.emitEvent != nil {
+		return func() tea.Msg {
+			return e.emitEvent(map[string]interface{}{
+				"type":     "EventSubmit",
+				"section":  e.section,
+				"entityID": e.entityID,
+				"changes":  changes,
+			})
+		}
 	}
 	return nil
 }
 
+//
+// REMOVED (Phase 2): Data now comes from EventStartEdit via state machine
+//
 // fetchCurrentState fetches the current entity state.
-func (e *EditOverlay) fetchCurrentState(historyDir string) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		state, err := e.service.Fetch(ctx, e.entityID)
-		if err != nil {
-			logger.Error("failed to fetch entity", "type", e.entityType, "id", e.entityID, "error", err)
-			if ctx.Err() == context.DeadlineExceeded {
-				return EditOverlayError{Message: "Request timed out after 10 seconds"}
-			}
-			return EditOverlayError{Message: fmt.Sprintf("Failed to fetch: %v", err)}
-		}
-
-		session := edit.NewSession(e.entityType, e.entityID, e.fields, state)
-		return EditOverlayReady{Session: session, HistoryDir: historyDir}
-	}
-}
+// func (e *EditOverlay) fetchCurrentState(historyDir string) tea.Cmd {
+//      return func() tea.Msg {
+//              ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+//              defer cancel()
+// 
+//              state, err := e.service.Fetch(ctx, e.entityID)
+//              if err != nil {
+//                      logger.Error("failed to fetch entity", "type", e.entityType, "id", e.entityID, "error", err)
+//                      if ctx.Err() == context.DeadlineExceeded {
+//                              return EditOverlayError{Message: "Request timed out after 10 seconds"}
+//                      }
+//                      return EditOverlayError{Message: fmt.Sprintf("Failed to fetch: %v", err)}
+//              }
+// 
+//              session := edit.NewSession(e.entityType, e.entityID, e.fields, state)
+//              return EditOverlayReady{Session: session, HistoryDir: historyDir}
+//      }
+// }
 
 // View renders the overlay.
 func (e *EditOverlay) View() string {
@@ -439,7 +473,7 @@ func (e *EditOverlay) View() string {
 		modeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFD700")).Bold(true)
 	}
 	if e.mode == modeSaving {
-		modeLabel = "SAVING..."
+		modeLabel = "SAVING... (Esc to cancel)"
 		modeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF8800")).Bold(true)
 	}
 
@@ -471,6 +505,9 @@ func (e *EditOverlay) View() string {
 	} else if e.mode == modeEdit {
 		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#666666")).Render(
 			" esc: back to view  •  enter: edit field  •  ctrl+s: save all  •  ctrl+z: undo  •  ↑↓: navigate"))
+	} else if e.mode == modeSaving {
+		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FFAA00")).Render(
+			" SAVING... Esc to cancel  •  auto-timeout in 30s"))
 	} else {
 		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#666666")).Render(
 			" esc: close  •  e: edit  •  ↑↓: navigate"))
@@ -579,8 +616,11 @@ type EditOverlayConfig struct {
 	EntityType string
 	EntityID   string
 	Fields     []edit.FieldDef
-	Service    edit.EntityService
 	OnClose    func() tea.Msg
-	OnSave     func(map[string]interface{}) tea.Msg
+
+	// Event emitters (Phase 2 state machine integration)
+	Section    int // state.Section enum value
+	EmitEvent  func(evt interface{}) tea.Msg
+
 	HistoryDir string
 }
