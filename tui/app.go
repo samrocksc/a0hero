@@ -570,9 +570,25 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case state.EventStartEdit:
-		// Data is now loaded in the edit overlay, just need to re-render
+		// Initialize the state machine session and transition to editing state
+		logger.Info("EventStartEdit: initializing state machine", "section", msg.Section, "entityID", msg.EntityID)
+
+		// Initialize the session in the state machine
+		machine := a.stateManager.GetMachine(msg.Section)
+		if machine != nil {
+			machine.SetSession(msg.EntityType, msg.EntityID, nil, msg.InitialState)
+			// Transition to StateEditing directly
+			_, cmd := machine.ProcessEvent(state.EventEditingStarted{
+				Section:  msg.Section,
+				EntityID: msg.EntityID,
+			})
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
+
 		logger.Debug("edit overlay data loaded", "entity", msg.EntityType, "id", msg.EntityID)
-		return a, nil
+		return a, tea.Batch(cmds...)
 	}
 
 	// If we have an active edit overlay, forward ALL messages to it
@@ -1174,6 +1190,8 @@ func (a *App) openEditOverlay() (tea.Model, tea.Cmd) {
 			}
 		}
 
+		logger.Info("fetch successful, creating edit overlay", "entityType", entityType, "id", item.id)
+
 		// Create overlay with data already loaded
 		cfg := views.SimpleEditOverlayConfig{
 			EntityType: entityType,
@@ -1198,12 +1216,14 @@ func (a *App) openEditOverlay() (tea.Model, tea.Cmd) {
 		})
 
 		// Notify state machine that edit has started
-		return state.EventStartEdit{
+		evt := state.EventStartEdit{
 			Section:      a.section.toStateSection(),
 			EntityID:     item.id,
 			EntityType:   entityType,
 			InitialState: initialState,
 		}
+		logger.Info("EMITTING EventStartEdit", "section", evt.Section, "entityID", evt.EntityID)
+		return evt
 	}
 }
 
@@ -1581,9 +1601,13 @@ func (fmtHelper) dimCount(cursor, total int) string {
 // emitEvent wraps events and routes them to the state machine.
 // Supports both proper SectionEvents and legacy map[string]interface{} from edit overlay.
 func (a *App) emitEvent(evt interface{}) tea.Msg {
+	logger.Info("emitEvent ENTER", "eventType", fmt.Sprintf("%T", evt))
+
 	// If it's already a SectionEvent, process directly
 	if se, ok := evt.(state.SectionEvent); ok {
+		logger.Info("emitEvent: processing as SectionEvent", "eventType", fmt.Sprintf("%T", se))
 		cmd := a.stateManager.ProcessEvent(se)
+		logger.Info("emitEvent: ProcessEvent returned", "cmdNil", cmd == nil)
 		return cmd
 	}
 	
@@ -1632,13 +1656,15 @@ func (a *App) emitEvent(evt interface{}) tea.Msg {
 // initStateManagerServices initializes the EntityService for each section in the state manager.
 func (a *App) initStateManagerServices() {
 	if a.api == nil {
+		logger.Warn("initStateManagerServices: api is nil")
 		return
 	}
-	
+
+	logger.Info("initStateManagerServices: starting", "section", a.section)
 	clientModuleClient := clientmod.New(a.api)
 	a.stateManager.UpdateService(state.SecClients, &clientServiceAdapter{moduleClient: clientModuleClient})
-	
-	logger.Info("state manager services initialized")
+
+	logger.Info("state manager services initialized", "SecClients_set", a.stateManager.GetMachine(state.SecClients) != nil)
 }
 
 // clientServiceAdapter wraps clients.Auth0Client to implement state.EntityService

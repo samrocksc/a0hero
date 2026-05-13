@@ -44,10 +44,11 @@ var ClientFields = []edit.FieldDef{
 		Help:   "Indicates if this is a first-party application (built-in)",
 	},
 	{
-		Key:    "is_global",
-		Label:  "Global Application",
-		Type:   edit.FieldBool,
-		Help:   "Indicates if this is a global application (e.g., Auth0 dashboard)",
+		Key:      "is_global",
+		Label:    "Global Application",
+		Type:     edit.FieldBool,
+		ReadOnly: true,
+		Help:     "Indicates if this is a global application (e.g., Auth0 dashboard) - read-only",
 	},
 
 	// Section: Login URLs

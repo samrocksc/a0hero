@@ -3,6 +3,8 @@ package state
 
 import (
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/samrocksc/a0hero/logger"
 )
 
 // StateManager coordinates state machines for all sections.
@@ -32,12 +34,16 @@ func NewStateManager(services map[Section]EntityService) *StateManager {
 // ProcessEvent routes an event to the appropriate section's machine.
 func (sm *StateManager) ProcessEvent(evt SectionEvent) tea.Cmd {
 	section := evt.GetSection()
+	logger.Info("StateManager.ProcessEvent ENTER", "section", section)
 	machine, ok := sm.machines[section]
 	if !ok {
+		logger.Warn("StateManager.ProcessEvent: no machine for section", "section", section)
 		return nil
 	}
 
+	logger.Info("StateManager.ProcessEvent: found machine, calling ProcessEvent", "section", section)
 	_, cmd := machine.ProcessEvent(evt)
+	logger.Info("StateManager.ProcessEvent EXIT", "section", section, "cmdNil", cmd == nil)
 	return cmd
 }
 

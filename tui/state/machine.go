@@ -9,7 +9,9 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/samrocksc/a0hero/logger"
+	"github.com/samrocksc/a0hero/modules/edit"
 )
 
 // EntityService defines the interface for entity operations.
@@ -61,6 +63,8 @@ func (m *SectionMachine) ProcessEvent(evt SectionEvent) (SectionState, tea.Cmd) 
 	if evt.GetSection() != m.section {
 		return m.state, nil // ignore events for other sections
 	}
+
+	logger.Info("ProcessEvent ENTRY", "section", m.section, "state", m.state, "eventType", fmt.Sprintf("%T", evt))
 
 	// Process based on current state
 	switch m.state {
@@ -127,6 +131,12 @@ func (m *SectionMachine) handleIdleEvent(evt SectionEvent) (SectionState, tea.Cm
 	switch e := evt.(type) {
 	case EventStartEdit:
 		m.startEditing(e.EntityType, e.EntityID, e.InitialState)
+		logger.Info("handleIdleEvent: transitioning to StateEditing", "section", m.section)
+		return m.transitionTo(StateEditing)
+
+	case EventEditingStarted:
+		// Session is already set, just transition to editing state
+		logger.Info("handleIdleEvent: EventEditingStarted, transitioning to StateEditing", "section", m.section)
 		return m.transitionTo(StateEditing)
 
 	case EventDataLoadStart:
@@ -137,7 +147,8 @@ func (m *SectionMachine) handleIdleEvent(evt SectionEvent) (SectionState, tea.Cm
 		return StateIdle, nil
 
 	default:
-		// Ignore other events
+		// Log unexpected events in idle state
+		logger.Warn("handleIdleEvent: unexpected event", "section", m.section, "eventType", fmt.Sprintf("%T", evt))
 		return StateIdle, nil
 	}
 }
@@ -169,16 +180,20 @@ func (m *SectionMachine) handleEditingEvent(evt SectionEvent) (SectionState, tea
 			changed := m.session.SetFieldValue(e.Field, e.Value)
 			logger.Debug("SetFieldValue result", "changed", changed, "hasChanges", m.session.HasChanges())
 			if changed && m.session.HasChanges() {
+				logger.Info("handleEditingEvent: transitioning to StatePendingEdit", "section", m.section)
 				return m.transitionTo(StatePendingEdit)
 			}
+		} else {
+			logger.Warn("handleEditingEvent: session is nil!", "section", m.section)
 		}
 		return StateEditing, nil
 
 	case EventSubmit:
-		logger.Debug("EventSubmit received", "sessionNil", m.session == nil, "hasChanges", m.session != nil && m.session.HasChanges())
+		logger.Info("EventSubmit in handleEditingEvent", "section", m.section, "sessionNil", m.session == nil, "hasChanges", m.session != nil && m.session.HasChanges())
 		if m.session != nil && m.session.HasChanges() {
 			// Queue the API call and transition
 			m.queueSaveAction()
+			logger.Info("handleEditingEvent: transitioning to StateAPICall", "section", m.section)
 			return m.transitionTo(StateAPICall)
 		}
 		logger.Warn("EventSubmit ignored - no session or no changes", "sessionNil", m.session == nil)
@@ -308,6 +323,12 @@ func (m *SectionMachine) clearSession() {
 	m.clearPendingAction()
 }
 
+// SetSession initializes the session directly (for edit overlay setup)
+func (m *SectionMachine) SetSession(entityType, entityID string, fields []edit.FieldDef, initialState map[string]interface{}) {
+	m.session = NewEditSession(entityType, entityID, fields, initialState)
+	logger.Info("SetSession: session initialized", "section", m.section, "entityID", entityID)
+}
+
 func (m *SectionMachine) queueSaveAction() {
 	if m.session == nil {
 		return
@@ -329,9 +350,12 @@ func (m *SectionMachine) clearPendingAction() {
 func (m *SectionMachine) transitionTo(newState SectionState) (SectionState, tea.Cmd) {
 	oldState := m.state
 
+	logger.Info("transitionTo called", "section", m.section, "from", oldState, "to", newState)
+
 	// Validate transition is allowed
 	if !CanTransition(oldState, newState) {
 		// Log invalid transition attempt but stay in current state
+		logger.Error("INVALID STATE TRANSITION", "section", m.section, "from", oldState, "to", newState)
 		m.error = fmt.Errorf("invalid state transition from %s to %s", oldState, newState)
 		return oldState, nil
 	}
@@ -346,7 +370,9 @@ func (m *SectionMachine) transitionTo(newState SectionState) (SectionState, tea.
 	case StateLoading:
 		cmd = m.createLoadCmd()
 	case StateAPICall:
+		logger.Info("transitionTo: about to call createAPICallCmd", "section", m.section)
 		cmd = m.createAPICallCmd()
+		logger.Info("transitionTo: createAPICallCmd returned", "section", m.section, "cmdNil", cmd == nil)
 	}
 
 	// Log transition
@@ -366,25 +392,30 @@ func (m *SectionMachine) createLoadCmd() tea.Cmd {
 }
 
 func (m *SectionMachine) createAPICallCmd() tea.Cmd {
-	logger.Debug("createAPICallCmd called", "serviceNil", m.service == nil, "pendingActionEmpty", m.pendingAction.IsEmpty())
+	logger.Info("createAPICallCmd ENTER", "section", m.section, "serviceNil", m.service == nil, "pendingActionEmpty", m.pendingAction.IsEmpty())
 	if m.service == nil {
+		logger.Error("createAPICallCmd: service is NIL!", "section", m.section)
 		return nil
 	}
 
 	action := m.pendingAction
 	if action.IsEmpty() {
+		logger.Error("createAPICallCmd: pendingAction is EMPTY!", "section", m.section)
 		return nil
 	}
 
 	m.callInFlight = action.ID
+	logger.Info("createAPICallCmd: about to return API call function", "section", m.section, "entityID", action.EntityID)
 
 	return func() tea.Msg {
+		logger.Info("createAPICallCmd function EXECUTING", "section", m.section, "entityID", action.EntityID)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
 		logger.Info("executing API call", "section", m.section, "entityID", action.EntityID, "changes", action.Changes)
 		result, err := m.service.Update(ctx, action.EntityID, action.Changes)
 
+		logger.Info("API call COMPLETE", "section", m.section, "entityID", action.EntityID, "err", err)
 		return EventAPICallComplete{
 			Section:  m.section,
 			CallID:   action.ID,

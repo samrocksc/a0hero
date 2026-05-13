@@ -147,6 +147,15 @@ type EventDismissError struct {
 func (e EventDismissError) EventType() string { return "dismiss_error" }
 func (e EventDismissError) GetSection() Section { return e.Section }
 
+// EventEditingStarted is sent when edit overlay is ready and user can start editing.
+type EventEditingStarted struct {
+	Section  Section
+	EntityID string
+}
+
+func (e EventEditingStarted) EventType() string { return "editing_started" }
+func (e EventEditingStarted) GetSection() Section { return e.Section }
+
 // String returns a human-readable representation of a section.
 func (s Section) String() string {
 	names := []string{"Users", "Clients", "Roles", "Connections", "Logs", "Configure"}

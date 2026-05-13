@@ -196,7 +196,15 @@ func (c *Client) Post(ctx context.Context, path string, body, result any) error 
 
 // Patch issues a PATCH request with the given body.
 func (c *Client) Patch(ctx context.Context, path string, body, result any) error {
-	return c.rawRequest(ctx, http.MethodPatch, path, body, result)
+	logger.Info("PATCH REQUEST START", "path", path, "body", body)
+	start := time.Now()
+
+	err := c.rawRequest(ctx, http.MethodPatch, path, body, result)
+
+	duration := time.Since(start)
+	logger.Info("PATCH REQUEST COMPLETE", "path", path, "duration_ms", duration.Milliseconds(), "error", err)
+
+	return err
 }
 
 // Delete issues a DELETE request to the given path.
